@@ -15,9 +15,13 @@ import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 
 let sessionNumber = 0;
 
-const createInputs: unknown[] = [];
+type SessionInput = { directory: string };
 
-const promptInputs: unknown[] = [];
+type PromptInput = { sessionID: string; parts: Array<{ type: "text"; text: string }> };
+
+const createInputs: SessionInput[] = [];
+
+const promptInputs: PromptInput[] = [];
 
 let healthAvailable = true;
 
@@ -25,20 +29,18 @@ const client = {
   global: {
     async health() {
       if (!healthAvailable) throw new Error("server unavailable");
-
-      return { data: { healthy: true } };
     },
   },
   session: {
-    async create(input: unknown) {
+    async create(input: SessionInput) {
       createInputs.push(input);
       sessionNumber += 1;
 
       return { data: { id: `session_${sessionNumber}` } };
     },
-    async prompt(input: unknown) {
+    async prompt(input: PromptInput) {
       promptInputs.push(input);
-      const sessionId = (input as { sessionID: string }).sessionID;
+      const sessionId = input.sessionID;
 
       return {
         data: {
@@ -48,7 +50,7 @@ const client = {
       };
     },
   },
-} as unknown as OpencodeClientLike;
+} satisfies OpencodeClientLike;
 
 let factoryCalls = 0;
 
@@ -235,17 +237,17 @@ assert.deepEqual(promptInputs[2], {
 
 const timeoutClient = {
   global: {
-    async health() { return { data: { healthy: true } }; },
+    async health() {},
   },
   session: {
     async create() { return { data: { id: "session_timeout" } }; },
-    async prompt(_input: unknown, options?: { signal?: AbortSignal }) {
+    async prompt(_input: PromptInput, options?: { signal?: AbortSignal }) {
       return new Promise<never>((_resolve, reject) => {
         options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
       });
     },
   },
-} as unknown as OpencodeClientLike;
+} satisfies OpencodeClientLike;
 
 const timeoutRuntime = new OpencodeRuntime(timeoutClient, { close: () => undefined }, 5);
 
@@ -281,19 +283,19 @@ assert.deepEqual(opencodePermissionFor("allowed"), {
 
 const readOnlyPermissions = opencodePermissionFor("read_only");
 
-assert.equal(typeof readOnlyPermissions === "object" ? readOnlyPermissions.bash : undefined, "deny");
+assert.equal(readOnlyPermissions.bash, "deny");
 
 for (const writeMode of ["read_only", "allowed", "full_access"] as const) {
   const config = opencodeAgentConfig(writeMode);
   assert.equal(config.mode, "primary");
-  assert.equal(typeof config.permission === "object" ? config.permission.task : undefined, "deny");
+  assert.equal(config.permission.task, "deny");
 }
 
 let promptFailureCount = 0;
 
 const applicationErrorClient = {
   global: {
-    async health() { return { data: { healthy: true } }; },
+    async health() {},
   },
   session: {
     async create() { return { data: { id: "session_app_error" } }; },
@@ -323,7 +325,7 @@ const applicationErrorClient = {
       };
     },
   },
-} as unknown as OpencodeClientLike;
+} satisfies OpencodeClientLike;
 
 const applicationErrorPool = new LocalAgentRuntimePool();
 

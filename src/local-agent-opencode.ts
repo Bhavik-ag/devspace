@@ -3,8 +3,6 @@ import { createServer as createNetServer } from "node:net";
 import type {
   AssistantMessage,
   OpencodeClient,
-  Part,
-  PermissionConfig,
 } from "@opencode-ai/sdk/v2";
 import { z, type JSONType } from "zod";
 import {
@@ -40,9 +38,22 @@ interface OpencodeModelRef {
   modelID: string;
 }
 
+type OpencodePermissionAction = "allow" | "deny";
+
+interface OpencodePermissionConfig {
+  read: OpencodePermissionAction;
+  edit: OpencodePermissionAction;
+  glob: OpencodePermissionAction;
+  grep: OpencodePermissionAction;
+  list: OpencodePermissionAction;
+  bash: OpencodePermissionAction;
+  task: OpencodePermissionAction;
+  external_directory: OpencodePermissionAction;
+}
+
 interface OpencodeAgentSettings {
   mode: "primary";
-  permission: PermissionConfig;
+  permission: OpencodePermissionConfig;
 }
 
 interface OpencodeServerConfig {
@@ -54,8 +65,12 @@ interface OpencodeServerConfig {
 }
 
 interface OpencodePromptData {
-  info: AssistantMessage;
-  parts: Part[];
+  info: {
+    role: string;
+    error?: AssistantMessage["error"];
+    structured?: JSONType;
+  };
+  parts: Array<{ type: string; text?: string }>;
 }
 
 interface OpencodePromptRequest {
@@ -100,7 +115,24 @@ const providerTextPartSchema = z.object({
   text: z.string(),
 });
 
-export type OpencodeClientLike = Pick<OpencodeClient, "global" | "session">;
+interface OpencodeRequestOptions {
+  signal?: AbortSignal;
+}
+
+export interface OpencodeClientLike {
+  global: {
+    health(): Promise<void>;
+  };
+  session: {
+    create(
+      input: { directory: string },
+    ): Promise<{ data?: { id: string } }>;
+    prompt(
+      input: OpencodePromptRequest,
+      options?: OpencodeRequestOptions,
+    ): Promise<{ data: OpencodePromptData }>;
+  };
+}
 
 export interface OpencodeServerLike {
   close(): void;
@@ -263,10 +295,49 @@ async function defaultOpencodeFactory(
   };
 
   const server = await startOpencodeServer(env, config);
+  const sdkClient = createOpencodeClient({ baseUrl: server.url });
 
   return {
-    client: createOpencodeClient({ baseUrl: server.url }),
+    client: wrapOpencodeClient(sdkClient),
     server,
+  };
+}
+
+function wrapOpencodeClient(sdkClient: OpencodeClient): OpencodeClientLike {
+  return {
+    global: {
+      health: async (): Promise<void> => {
+        await sdkClient.global.health({ throwOnError: true });
+      },
+    },
+    session: {
+      create: async (input) => {
+        const result = await sdkClient.session.create(input, { throwOnError: true });
+
+        return { data: result.data ? { id: result.data.id } : undefined };
+      },
+      prompt: async (input, options) => {
+        const result = await sdkClient.session.prompt(input, {
+          ...options,
+          throwOnError: true,
+        });
+
+        const structured = z.json().safeParse(result.data.info.structured);
+
+        return {
+          data: {
+            info: {
+              role: result.data.info.role,
+              error: result.data.info.error,
+              structured: structured.success ? structured.data : undefined,
+            },
+            parts: result.data.parts.map((part) => part.type === "text"
+              ? { type: part.type, text: part.text }
+              : { type: part.type }),
+          },
+        };
+      },
+    },
   };
 }
 
@@ -412,7 +483,7 @@ async function createOpencodeSession(
 ): Promise<string> {
   const result = await client.session.create({
     directory: input.workspaceRoot,
-  }, { throwOnError: true });
+  });
 
   return requireSessionId(result.data);
 }
@@ -426,7 +497,7 @@ export function opencodeAgentFor(writeMode: LocalAgentRunInput["writeMode"]): st
   }
 }
 
-export function opencodePermissionFor(writeMode: LocalAgentRunInput["writeMode"]): PermissionConfig {
+export function opencodePermissionFor(writeMode: LocalAgentRunInput["writeMode"]): OpencodePermissionConfig {
   const allowed = writeMode !== "read_only";
   const unrestricted = writeMode === "full_access";
 
@@ -444,7 +515,7 @@ export function opencodePermissionFor(writeMode: LocalAgentRunInput["writeMode"]
 
 async function assertOpencodeHealthy(client: OpencodeClientLike): Promise<void> {
   try {
-    await client.global.health({ throwOnError: true });
+    await client.global.health();
   } catch (error) {
     throw new OpencodeHealthError(errorMessage(error));
   }
@@ -496,7 +567,7 @@ async function promptOpencodeSession(
 
   if (input.effort) request.variant = input.effort;
 
-  const result = await client.session.prompt(request, { throwOnError: true, signal });
+  const result = await client.session.prompt(request, { signal });
 
   return result.data;
 }
