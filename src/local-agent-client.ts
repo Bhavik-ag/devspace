@@ -7,12 +7,10 @@ import { matchError, Result, type Result as BetterResult } from "better-result";
 import type { ServerConfig } from "./config.js";
 import {
   AgentDaemonConfigChangedError,
-  AgentDaemonInvalidRequestError,
   AgentDaemonInvalidResponseError,
   AgentDaemonProtocolMismatchError,
   AgentDaemonStartupError,
   AgentDaemonTimeoutError,
-  AgentDaemonUnauthorizedError,
   AgentDaemonUnavailableError,
   agentErrorFromPayload,
   isAgentDaemonError,
@@ -64,12 +62,19 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const RETRY_DELAY_MS = 40;
 
 type RequestError<M extends LocalAgentDaemonRequest["method"]> =
-  M extends "agent.start" ? AgentStartError | AgentDaemonError
-    : M extends "agent.continue" ? AgentContinueError | AgentDaemonError
-      : M extends "agent.get" ? AgentLookupError | AgentDaemonError
-        : M extends "agent.list" ? AgentListError | AgentDaemonError
-          : M extends "agent.wait" ? AgentWaitError | AgentDaemonError
-          : AgentDaemonError;
+  AgentDaemonError
+  | (M extends "agent.start" ? AgentStartError
+    : M extends "agent.continue" ? AgentContinueError
+      : M extends "agent.get" ? AgentLookupError
+        : M extends "agent.list" ? AgentListError
+          : M extends "agent.wait" ? AgentWaitError
+          : never);
+
+type LocalAgentDaemonRequestBody<
+  T extends LocalAgentDaemonRequest = LocalAgentDaemonRequest,
+> = T extends LocalAgentDaemonRequest
+  ? Omit<T, "requestId" | "protocolVersion" | "authToken">
+  : never;
 
 export interface LocalAgentClientOptions {
   stateDir: string;
@@ -112,7 +117,7 @@ export class LocalAgentClient {
   async start(
     input: StartLocalAgentInput,
   ): Promise<BetterResult<LocalAgentRecord, AgentStartError | AgentDaemonError>> {
-    const result = await this.request("agent.start", input);
+    const result = await this.request({ method: "agent.start", params: input });
 
     return decodeRequestResult(result, "agent.start", decodeAgentRecord);
   }
@@ -123,12 +128,15 @@ export class LocalAgentClient {
     overrides: RunOverrides = {},
     scope: LocalAgentWorkspaceScope,
   ): Promise<BetterResult<LocalAgentRecord, AgentContinueError | AgentDaemonError>> {
-    const result = await this.request("agent.continue", {
+    const params: Extract<LocalAgentDaemonRequest, { method: "agent.continue" }>['params'] = {
       id: agentId,
       prompt,
       scope,
-      ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
-    });
+    };
+
+    if (Object.keys(overrides).length > 0) params.overrides = overrides;
+
+    const result = await this.request({ method: "agent.continue", params });
 
     return decodeRequestResult(result, "agent.continue", decodeAgentRecord);
   }
@@ -137,7 +145,7 @@ export class LocalAgentClient {
     agentId: string,
     scope: LocalAgentWorkspaceScope,
   ): Promise<BetterResult<LocalAgentRecord, AgentLookupError | AgentDaemonError>> {
-    const result = await this.request("agent.get", { id: agentId, scope });
+    const result = await this.request({ method: "agent.get", params: { id: agentId, scope } });
 
     return decodeRequestResult(result, "agent.get", decodeAgentRecord);
   }
@@ -145,7 +153,7 @@ export class LocalAgentClient {
   async list(
     scope: LocalAgentWorkspaceScope,
   ): Promise<BetterResult<LocalAgentRecord[], AgentListError | AgentDaemonError>> {
-    const result = await this.request("agent.list", scope);
+    const result = await this.request({ method: "agent.list", params: scope });
 
     return decodeRequestResult(result, "agent.list", decodeAgentRecordList);
   }
@@ -159,29 +167,32 @@ export class LocalAgentClient {
       ? null
       : Math.min(2_147_483_647, timeoutMs + this.requestTimeoutMs);
 
-    const result = await this.request("agent.wait", {
+    const params: Extract<LocalAgentDaemonRequest, { method: "agent.wait" }>['params'] = {
       ids: [...agentIds],
       scope,
-      ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    }, transportTimeoutMs);
+    };
+
+    if (timeoutMs !== undefined) params.timeoutMs = timeoutMs;
+
+    const result = await this.request({ method: "agent.wait", params }, transportTimeoutMs);
 
     return decodeRequestResult(result, "agent.wait", decodeAgentWaitResults);
   }
 
   async status(): Promise<BetterResult<LocalAgentDaemonStatus, AgentDaemonError>> {
-    const result = await this.requestExisting("daemon.status", {});
+    const result = await this.requestExisting({ method: "daemon.status", params: {} });
 
     return decodeRequestResult(result, "daemon.status", decodeDaemonStatus);
   }
 
   async stop(): Promise<BetterResult<LocalAgentDaemonStatus, AgentDaemonError>> {
-    const result = await this.requestExisting("daemon.stop", {});
+    const result = await this.requestExisting({ method: "daemon.stop", params: {} });
 
     return decodeRequestResult(result, "daemon.stop", decodeDaemonStatus);
   }
 
   async logs(lines = 200): Promise<BetterResult<string, AgentDaemonError>> {
-    const result = await this.requestExisting("daemon.logs", { lines });
+    const result = await this.requestExisting({ method: "daemon.logs", params: { lines } });
 
     return decodeRequestResult(result, "daemon.logs", decodeDaemonLogs);
   }
@@ -435,83 +446,81 @@ export class LocalAgentClient {
   }
 
   private async request<M extends LocalAgentDaemonRequest["method"]>(
-    method: M,
-    params: Extract<LocalAgentDaemonRequest, { method: M }>['params'],
+    request: Extract<LocalAgentDaemonRequestBody, { method: M }>,
     timeoutMs: number | null = this.requestTimeoutMs,
-  ): Promise<BetterResult<unknown, RequestError<M>>> {
-    const ready = await (isObservationRequest(method)
+  ): Promise<BetterResult<LocalAgentDaemonResult, RequestError<M>>> {
+    const ready = await (isObservationRequest(request.method)
       ? this.ensureReadyForObservation()
       : this.ensureReady());
 
-    if (ready.isErr()) return ready as BetterResult<unknown, RequestError<M>>;
-    const authToken = this.authTokenResult(method);
+    if (ready.isErr()) return Result.err<LocalAgentDaemonResult, RequestError<M>>(ready.error);
+    const authToken = this.authTokenResult(request.method);
 
-    if (authToken.isErr()) return authToken as BetterResult<unknown, RequestError<M>>;
+    if (authToken.isErr()) return Result.err<LocalAgentDaemonResult, RequestError<M>>(authToken.error);
 
+    // SAFETY: method and params are correlated by the Extract parameter contract above.
     const response = await sendRequest(this.endpoint, {
       requestId: randomUUID(),
       protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
       authToken: authToken.value,
-      method,
-      params,
-    } as LocalAgentDaemonRequest, timeoutMs ?? undefined);
+      ...request,
+    }, timeoutMs ?? undefined);
 
-    if (response.isErr()) return response as BetterResult<unknown, RequestError<M>>;
+    if (response.isErr()) return Result.err<LocalAgentDaemonResult, RequestError<M>>(response.error);
 
     if (!response.value.ok) {
-      const error = decodeRemoteError(response.value.error, method);
+      const error = decodeRemoteError(response.value.error, request.method);
 
-      if (!isRequestError(method, error)) {
-        return Result.err(new AgentDaemonInvalidResponseError({
+      if (!isRequestError(request.method, error)) {
+        return Result.err<LocalAgentDaemonResult, RequestError<M>>(new AgentDaemonInvalidResponseError({
           code: "DAEMON_INVALID_RESPONSE",
-          operation: method,
+          operation: request.method,
           retryable: false,
           cause: response.value.error,
           message: "Local agent daemon returned an error that is invalid for this request.",
-        })) as BetterResult<unknown, RequestError<M>>;
+        }));
       }
 
-      return Result.err(error) as BetterResult<unknown, RequestError<M>>;
+      return Result.err<LocalAgentDaemonResult, RequestError<M>>(error);
     }
 
     return Result.ok(response.value.result);
   }
 
-  private async requestExisting<M extends LocalAgentDaemonRequest["method"]>(
-    method: M,
-    params: Extract<LocalAgentDaemonRequest, { method: M }>['params'],
-  ): Promise<BetterResult<unknown, AgentDaemonError>> {
-    const authToken = this.existingAuthTokenResult(method);
+  private async requestExisting(
+    request: LocalAgentDaemonRequestBody,
+  ): Promise<BetterResult<LocalAgentDaemonResult, AgentDaemonError>> {
+    const authToken = this.existingAuthTokenResult(request.method);
 
     if (authToken.isErr()) return authToken;
 
     if (!authToken.value) {
       return Result.err(new AgentDaemonUnavailableError({
         code: "DAEMON_UNAVAILABLE",
-        operation: method,
+        operation: request.method,
         retryable: true,
         message: "Local agent daemon is not running.",
       }));
     }
 
+    // SAFETY: method and params are correlated by the Extract parameter contract above.
     const response = await sendRequest(this.endpoint, {
       requestId: randomUUID(),
       protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
       authToken: authToken.value,
-      method,
-      params,
-    } as LocalAgentDaemonRequest, this.requestTimeoutMs);
+      ...request,
+    }, this.requestTimeoutMs);
 
     if (response.isErr()) return response;
 
     if (!response.value.ok) {
-      const error = decodeRemoteError(response.value.error, method);
+      const error = decodeRemoteError(response.value.error, request.method);
 
       if (isAgentDaemonError(error)) return Result.err(error);
 
       return Result.err(new AgentDaemonInvalidResponseError({
         code: "DAEMON_INVALID_RESPONSE",
-        operation: method,
+        operation: request.method,
         retryable: false,
         cause: response.value.error,
         message: "Local agent daemon returned an invalid daemon-control error.",
@@ -667,7 +676,7 @@ async function sendRequest(
       if (newline === -1) return;
 
       try {
-        const response = decodeLocalAgentDaemonResponse(JSON.parse(buffer.slice(0, newline)) as unknown);
+        const response = decodeLocalAgentDaemonResponse(JSON.parse(buffer.slice(0, newline)));
 
         if (response.requestId !== request.requestId) {
           throw new LocalAgentDaemonProtocolError("INVALID_RESPONSE", "Daemon response request id did not match.");
@@ -706,18 +715,20 @@ async function sendRequest(
   });
 }
 
+type LocalAgentDaemonResult = Extract<LocalAgentDaemonResponse, { ok: true }>["result"];
+
 function decodeRequestResult<T, E extends LocalAgentError>(
-  result: BetterResult<unknown, E>,
+  result: BetterResult<LocalAgentDaemonResult, E>,
   operation: string,
-  decode: (value: unknown) => T,
+  decode: (value: LocalAgentDaemonResult) => T,
 ): BetterResult<T, E | AgentDaemonInvalidResponseError> {
   return result.andThen((value) => decodeValue(value, operation, decode));
 }
 
 function decodeValue<T>(
-  value: unknown,
+  value: LocalAgentDaemonResult,
   operation: string,
-  decode: (value: unknown) => T,
+  decode: (value: LocalAgentDaemonResult) => T,
 ): BetterResult<T, AgentDaemonInvalidResponseError> {
   try {
     return Result.ok(decode(value));
@@ -747,10 +758,10 @@ function decodeRemoteError(
   });
 }
 
-function isRequestError(
-  method: LocalAgentDaemonRequest["method"],
+function isRequestError<M extends LocalAgentDaemonRequest["method"]>(
+  method: M,
   error: LocalAgentError,
-): boolean {
+): error is RequestError<M> {
   const category = matchError(error, {
     AgentTargetError: () => "target" as const,
     AgentConflictError: () => "conflict" as const,
