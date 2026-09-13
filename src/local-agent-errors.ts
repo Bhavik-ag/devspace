@@ -8,6 +8,7 @@ import {
   isLocalAgentProvider,
   type LocalAgentProvider,
 } from "./local-agent-profiles.js";
+import { z } from "zod";
 
 export type AgentTargetErrorCode =
   | "UNKNOWN_TARGET"
@@ -49,14 +50,14 @@ export class AgentScopeError extends TaggedError("AgentScopeError")<{
   message: string;
 }>() {}
 
-interface AgentProviderErrorFields extends Record<string, unknown> {
+type AgentProviderErrorFields = {
   provider: LocalAgentProvider;
   agentId?: string;
   operation: string;
   retryable: boolean;
   cause?: unknown;
   message: string;
-}
+};
 
 export class AgentProviderUnavailableError extends TaggedError(
   "AgentProviderUnavailableError",
@@ -80,12 +81,12 @@ export type AgentProviderError =
   | AgentProviderProtocolError
   | AgentProviderExecutionError;
 
-interface AgentDaemonErrorFields extends Record<string, unknown> {
+type AgentDaemonErrorFields = {
   operation: string;
   retryable: boolean;
   cause?: unknown;
   message: string;
-}
+};
 
 export class AgentDaemonUnavailableError extends TaggedError(
   "AgentDaemonUnavailableError",
@@ -440,37 +441,41 @@ export async function captureAgentProviderResult<T>(input: {
   }
 }
 
-export function isProgrammerDefect(error: unknown): boolean {
-  if (unavailableCauseKind(error)) return false;
+export function isProgrammerDefect(cause: unknown): boolean {
+  if (unavailableCauseKind(cause)) return false;
 
-  return error instanceof TypeError
-    || error instanceof ReferenceError
-    || error instanceof SyntaxError
-    || error instanceof RangeError
-    || (error instanceof Error && error.name === "AssertionError");
+  return cause instanceof TypeError
+    || cause instanceof ReferenceError
+    || cause instanceof SyntaxError
+    || cause instanceof RangeError
+    || (cause instanceof Error && cause.name === "AssertionError");
 }
 
-function isAbortError(error: unknown): boolean {
-  return Boolean(
-    error
-      && typeof error === "object"
-      && "name" in error
-      && String((error as { name?: unknown }).name) === "AbortError",
-  );
+const causeDetailsSchema = z.object({
+  name: z.string().optional(),
+  code: z.string().optional(),
+  cause: z.unknown().optional(),
+});
+
+function isAbortError(cause: unknown): boolean {
+  const parsed = causeDetailsSchema.safeParse(cause);
+
+  return parsed.success && parsed.data.name === "AbortError";
 }
 
-function unavailableCauseKind(error: unknown): "permanent" | "transient" | undefined {
-  const seen = new Set<object>();
-  let current = error;
+function unavailableCauseKind(cause: unknown): "permanent" | "transient" | undefined {
+  let current = cause;
 
-  while (current && typeof current === "object" && !seen.has(current)) {
-    seen.add(current);
-    const code = "code" in current ? String((current as { code?: unknown }).code) : "";
+  for (let depth = 0; depth < 8; depth += 1) {
+    const parsed = causeDetailsSchema.safeParse(current);
+
+    if (!parsed.success) return undefined;
+    const { code } = parsed.data;
 
     if (code === "ENOENT") return "permanent";
 
     if (code === "ECONNREFUSED" || code === "ENOTFOUND") return "transient";
-    current = "cause" in current ? (current as { cause?: unknown }).cause : undefined;
+    current = parsed.data.cause;
   }
 
   return undefined;
@@ -489,46 +494,60 @@ function displayProvider(provider: LocalAgentProvider): string {
 }
 
 function targetErrorPayload(error: AgentTargetError): AgentErrorPayload {
-  return {
+  const payload: AgentErrorPayload = {
     code: error.code,
     message: error.message,
     retryable: error.retryable,
     target: error.target,
-    ...(error.provider ? { provider: error.provider } : {}),
-    ...(error.operation ? { operation: error.operation } : {}),
   };
+
+  if (error.provider) payload.provider = error.provider;
+
+  if (error.operation) payload.operation = error.operation;
+
+  return payload;
 }
 
 function conflictErrorPayload(error: AgentConflictError): AgentErrorPayload {
-  return {
+  const payload: AgentErrorPayload = {
     code: error.code,
     message: error.message,
     retryable: error.retryable,
     operation: error.operation,
-    ...(error.agentId ? { agentId: error.agentId } : {}),
   };
+
+  if (error.agentId) payload.agentId = error.agentId;
+
+  return payload;
 }
 
 function scopeErrorPayload(error: AgentScopeError): AgentErrorPayload {
-  return {
+  const payload: AgentErrorPayload = {
     code: error.code,
     message: error.message,
     retryable: error.retryable,
     operation: error.operation,
-    ...(error.agentId ? { agentId: error.agentId } : {}),
-    ...(error.workspaceId ? { workspaceId: error.workspaceId } : {}),
   };
+
+  if (error.agentId) payload.agentId = error.agentId;
+
+  if (error.workspaceId) payload.workspaceId = error.workspaceId;
+
+  return payload;
 }
 
 function providerErrorPayload(error: AgentProviderError): AgentErrorPayload {
-  return {
+  const payload: AgentErrorPayload = {
     code: error.code,
     message: error.message,
     retryable: error.retryable,
     provider: error.provider,
     operation: error.operation,
-    ...(error.agentId ? { agentId: error.agentId } : {}),
   };
+
+  if (error.agentId) payload.agentId = error.agentId;
+
+  return payload;
 }
 
 function daemonErrorPayload(error: AgentDaemonError): AgentErrorPayload {
