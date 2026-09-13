@@ -11,6 +11,7 @@ import {
   writeSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import { z } from "zod";
 
 export const LOCAL_AGENT_DAEMON_PROTOCOL_VERSION = 5;
 
@@ -23,6 +24,10 @@ export const LOCAL_AGENT_DAEMON_LOCK_NAME = "agentd.lock";
 export const LOCAL_AGENT_DAEMON_SECRET_NAME = "agentd.secret";
 
 export const LOCAL_AGENT_DAEMON_LOG_NAME = "agentd.log";
+
+const nodeErrorSchema = z.object({ code: z.string().optional() });
+
+type NodeError = z.infer<typeof nodeErrorSchema>;
 
 export interface LocalAgentDaemonPaths {
   stateDir: string;
@@ -202,7 +207,7 @@ export function isProcessAlive(pid: number): boolean {
 
     return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    return parseNodeError(error)?.code === "EPERM";
   }
 }
 
@@ -217,8 +222,8 @@ function writeFileSecure(path: string, content: string): void {
   }
 }
 
-function isFileExistsError(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === "EEXIST";
+function isFileExistsError(cause: unknown): boolean {
+  return parseNodeError(cause)?.code === "EEXIST";
 }
 
 function removeStaleLock(path: string): boolean {
@@ -233,9 +238,15 @@ function removeStaleLock(path: string): boolean {
 
     return true;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (parseNodeError(error)?.code === "ENOENT") return false;
     throw error;
   }
+}
+
+function parseNodeError(cause: unknown): NodeError | undefined {
+  const parsed = nodeErrorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data : undefined;
 }
 
 function isDaemonSecret(secret: string): boolean {

@@ -1,10 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, chmodSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server as NetServer, type Socket } from "node:net";
+import { z, type JSONType } from "zod";
 import {
   AgentDaemonInternalError,
   AgentDaemonInvalidRequestError,
-  AgentDaemonInvalidResponseError,
   AgentDaemonProtocolMismatchError,
   AgentDaemonTimeoutError,
   AgentDaemonUnauthorizedError,
@@ -27,7 +27,7 @@ import {
   encodeLocalAgentDaemonResponse,
   type LocalAgentDaemonRequest,
   type LocalAgentDaemonErrorPayload,
-  type LocalAgentDaemonResponse,
+  type LocalAgentDaemonHello,
   type LocalAgentDaemonStatus,
   LocalAgentDaemonProtocolError,
 } from "./local-agent-daemon-protocol.js";
@@ -53,6 +53,18 @@ const DEFAULT_IDLE_CHECK_INTERVAL_MS = 1_000;
 const DEFAULT_REQUEST_READ_TIMEOUT_MS = 5_000;
 
 const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 10_000;
+
+const requestIdPayloadSchema = z.object({ requestId: z.string() });
+
+const errorSchema = z.instanceof(Error);
+
+type LocalAgentDaemonDispatchResult =
+  | LocalAgentDaemonHello
+  | LocalAgentRecord
+  | LocalAgentRecord[]
+  | LocalAgentWaitResult[]
+  | LocalAgentDaemonStatus
+  | string;
 
 export interface LocalAgentDaemonManager {
   start(input: StartLocalAgentInput): Promise<Result<LocalAgentRecord, AgentStartError>>;
@@ -298,7 +310,7 @@ export class LocalAgentDaemon {
     let requestId = "";
 
     try {
-      let parsed: unknown;
+      let parsed: JSONType;
 
       try {
         parsed = JSON.parse(line);
@@ -322,7 +334,10 @@ export class LocalAgentDaemon {
     }
   }
 
-  private async dispatch(request: LocalAgentDaemonRequest, signal: AbortSignal): Promise<unknown> {
+  private async dispatch(
+    request: LocalAgentDaemonRequest,
+    signal: AbortSignal,
+  ): Promise<LocalAgentDaemonDispatchResult> {
     if (request.protocolVersion !== LOCAL_AGENT_DAEMON_PROTOCOL_VERSION) {
       throw new LocalAgentDaemonProtocolError(
         "PROTOCOL_MISMATCH",
@@ -400,8 +415,8 @@ export class LocalAgentDaemon {
     }
   }
 
-  private async runTurnRequest<T>(
-    operation: () => Promise<Result<T, unknown>>,
+  private async runTurnRequest<T, E>(
+    operation: () => Promise<Result<T, E>>,
   ): Promise<T> {
     this.activeTurnRequests += 1;
 
@@ -499,18 +514,15 @@ function safeEqual(actual: string, expected: string): boolean {
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-function readRequestId(value: unknown): string {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const requestId = (value as Record<string, unknown>).requestId;
-
-  return typeof requestId === "string" ? requestId : "";
+function readRequestId(value: JSONType): string {
+  return requestIdPayloadSchema.safeParse(value).data?.requestId ?? "";
 }
 
 export function writeLocalAgentDaemonLog(
   paths: LocalAgentDaemonPaths,
   level: "info" | "warn" | "error",
   event: string,
-  fields: Record<string, unknown>,
+  fields: Record<string, JSONType | undefined>,
 ): void {
   try {
     ensureLocalAgentDaemonStateDir(paths.stateDir);
@@ -531,31 +543,33 @@ export function readLocalAgentDaemonLogs(paths: LocalAgentDaemonPaths, lines = 2
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function errorMessage(cause: unknown): string {
+  const parsed = errorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data.message : String(cause);
 }
 
-function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
-  if (isLocalAgentError(error)) return toAgentErrorPayload(error);
+function daemonErrorPayload(cause: unknown): LocalAgentDaemonErrorPayload {
+  if (isLocalAgentError(cause)) return toAgentErrorPayload(cause);
 
-  if (error instanceof LocalAgentDaemonProtocolError) {
-    if (error.code === "PROTOCOL_MISMATCH") {
+  if (cause instanceof LocalAgentDaemonProtocolError) {
+    if (cause.code === "PROTOCOL_MISMATCH") {
       return toAgentErrorPayload(new AgentDaemonProtocolMismatchError({
         code: "DAEMON_PROTOCOL_MISMATCH",
         operation: "request",
         retryable: false,
-        cause: error,
-        message: error.message,
+        cause,
+        message: cause.message,
       }));
     }
 
-    if (error.code === "UNAUTHORIZED") {
+    if (cause.code === "UNAUTHORIZED") {
       return toAgentErrorPayload(new AgentDaemonUnauthorizedError({
         code: "DAEMON_UNAUTHORIZED",
         operation: "request",
         retryable: false,
-        cause: error,
-        message: error.message,
+        cause,
+        message: cause.message,
       }));
     }
 
@@ -563,8 +577,8 @@ function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
       code: "DAEMON_INVALID_REQUEST",
       operation: "request",
       retryable: false,
-      cause: error,
-      message: error.message,
+      cause,
+      message: cause.message,
     }));
   }
 
@@ -572,7 +586,7 @@ function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
     code: "DAEMON_INTERNAL_ERROR",
     operation: "request",
     retryable: false,
-    cause: error,
+    cause,
     message: "Local agent daemon encountered an unexpected internal failure.",
   }));
 }

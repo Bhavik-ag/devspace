@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { Result, type Result as BetterResult } from "better-result";
+import { z, type JSONType } from "zod";
 import {
   AgentProviderUnavailableError,
   type AgentProviderError,
@@ -18,8 +19,10 @@ const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 const DEFAULT_SESSION_IDLE_TIMEOUT_MS = 60_000;
 
+const errorSchema = z.instanceof(Error);
+
 export interface LocalAgentRuntimePoolLogger {
-  (level: "info" | "warn" | "error", event: string, fields: Record<string, unknown>): void;
+  (level: "info" | "warn" | "error", event: string, fields: Record<string, JSONType | undefined>): void;
 }
 
 interface RuntimeEntry {
@@ -563,7 +566,7 @@ export class LocalAgentRuntimePool {
   private log(
     level: "info" | "warn" | "error",
     event: string,
-    fields: Record<string, unknown>,
+    fields: Record<string, JSONType | undefined>,
   ): void {
     this.logger?.(level, event, fields);
   }
@@ -587,6 +590,8 @@ function hashRuntimeKey(key: string): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 12);
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function errorMessage(cause: unknown): string {
+  const parsed = errorSchema.safeParse(cause);
+
+  return parsed.success ? parsed.data.message : String(cause);
 }

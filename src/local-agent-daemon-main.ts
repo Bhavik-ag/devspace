@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { JSONType } from "zod";
 import { loadConfig } from "./config.js";
 import { createLocalAgentDrivers } from "./local-agent-adapters.js";
 import { loadLocalAgentProfiles } from "./local-agent-profiles.js";
@@ -21,7 +22,7 @@ const paths = localAgentDaemonPaths(config.stateDir);
 const log = (
   level: "info" | "warn" | "error",
   event: string,
-  fields: Record<string, unknown>,
+  fields: Record<string, JSONType | undefined>,
 ) => writeLocalAgentDaemonLog(paths, level, event, fields);
 
 const store = new LocalAgentStore(paths.stateDir);
