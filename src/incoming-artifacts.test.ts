@@ -12,7 +12,7 @@ await testRegistryFailsClosed();
 
 await testOpenAIFileAdapter();
 
-testLogShapeRedaction();
+testLogFieldsRedaction();
 
 async function testRegistryFailsClosed(): Promise<void> {
   const registry = new IncomingArtifactAdapterRegistry();
@@ -49,11 +49,11 @@ async function testRegistryFailsClosed(): Promise<void> {
 
   assert.throws(
     () => new IncomingArtifactAdapterRegistry([{ ...ambiguous, id: "UPPER" }]),
-    (error: unknown) => error instanceof ArtifactError && error.code === "invalid_incoming_adapter",
+    (error) => error instanceof ArtifactError && error.code === "invalid_incoming_adapter",
   );
   assert.throws(
     () => new IncomingArtifactAdapterRegistry([ambiguous, ambiguous]),
-    (error: unknown) => error instanceof ArtifactError && error.code === "duplicate_incoming_adapter",
+    (error) => error instanceof ArtifactError && error.code === "duplicate_incoming_adapter",
   );
 }
 
@@ -207,7 +207,7 @@ async function testOpenAIFileAdapter(): Promise<void> {
   );
 }
 
-function testLogShapeRedaction(): void {
+function testLogFieldsRedaction(): void {
   const value = {
     download_url: "https://files.oaiusercontent.com/file_123/download?sig=super-secret",
     file_id: "file_secret",
@@ -237,6 +237,6 @@ async function collect(stream: Readable): Promise<Buffer> {
 async function expectArtifactError(promise: Promise<unknown>, code: string): Promise<void> {
   await assert.rejects(
     promise,
-    (error: unknown) => error instanceof ArtifactError && error.code === code,
+    (error) => error instanceof ArtifactError && error.code === code,
   );
 }

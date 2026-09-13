@@ -1,6 +1,7 @@
 import { basename, isAbsolute } from "node:path";
 import { Readable } from "node:stream";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
+import { z } from "zod";
 import { ArtifactError } from "./artifact-error.js";
 
 const ADAPTER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u;
@@ -16,8 +17,6 @@ const OPENAI_REGIONAL_BLOB_HOST_PATTERN = /^oaisdmntpr[a-z0-9]+\.blob\.core\.win
 const OPENAI_FILENAME_SAFE_FILE_ID_PATTERN = /^file[-_][A-Za-z0-9][A-Za-z0-9._-]{0,255}$/u;
 
 const OPENAI_FILE_ID_MAX_LENGTH = 512;
-
-const OPENAI_FILE_ID_CONTROL_PATTERN = /[\u0000-\u001F\u007F]/u;
 
 const OPENAI_FILE_KEYS = new Set([
   "download_url",
@@ -41,9 +40,22 @@ export interface IncomingArtifactSource {
 
 export interface IncomingArtifactAdapter {
   readonly id: string;
-  canHandle(value: unknown): boolean;
-  open(value: unknown): Promise<IncomingArtifactSource>;
+  canHandle(value: IncomingArtifactInput): boolean;
+  open(value: IncomingArtifactInput): Promise<IncomingArtifactSource>;
 }
+
+type IncomingArtifactInput =
+  | null
+  | undefined
+  | boolean
+  | number
+  | bigint
+  | string
+  | symbol
+  | (() => void)
+  | Buffer
+  | readonly IncomingArtifactInput[]
+  | { readonly [key: string]: IncomingArtifactInput };
 
 export interface OpenedIncomingArtifact extends IncomingArtifactSource {
   adapterId: string;
@@ -76,7 +88,7 @@ export class IncomingArtifactAdapterRegistry {
     this.adapters = [...adapters];
   }
 
-  async open(value: unknown): Promise<OpenedIncomingArtifact> {
+  async open(value: IncomingArtifactInput): Promise<OpenedIncomingArtifact> {
     const matching: IncomingArtifactAdapter[] = [];
 
     for (const adapter of this.adapters) {
@@ -140,6 +152,8 @@ export interface OpenAIFileReference {
   size?: number;
 }
 
+type OpenAIFileReferenceInput = { readonly [key: string]: IncomingArtifactInput };
+
 export interface OpenAIIncomingArtifactAdapterOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
@@ -161,7 +175,7 @@ export function createOpenAIIncomingArtifactAdapter(
   return {
     id: "openai-file",
     canHandle: isOpenAIFileReferenceCandidate,
-    async open(value: unknown): Promise<IncomingArtifactSource> {
+    async open(value: IncomingArtifactInput): Promise<IncomingArtifactSource> {
       const reference = normalizeOpenAIFileReference(value);
 
       let downloadUrl = validateOpenAIFileUrl(reference.download_url);
@@ -222,61 +236,73 @@ export function createOpenAIIncomingArtifactAdapter(
         name: normalizeOpenAIFileName(reference.file_name, reference.file_id, mimeType),
         mimeType,
         size: responseSize ?? reference.size,
-        stream: Readable.fromWeb(response.body as unknown as NodeReadableStream),
+        // SAFETY: Response.body is a web ReadableStream, which Node's adapter accepts.
+        stream: Readable.fromWeb(response.body as NodeReadableStream),
       };
     },
   };
 }
 
-export type IncomingArtifactValueShape =
+export type IncomingArtifactValue =
   | { type: "null" }
   | { type: "undefined" }
   | { type: "boolean" }
   | { type: "number"; finite: boolean }
   | { type: "bigint" }
   | { type: "string"; kind: "absolute-path" | "url" | "data-url" | "text"; length: number }
-  | { type: "array"; length: number; items: IncomingArtifactValueShape[]; truncated: boolean }
+  | { type: "array"; length: number; items: IncomingArtifactValue[]; truncated: boolean }
   | {
       type: "object";
       constructor?: string;
-      entries: Record<string, IncomingArtifactValueShape>;
+      entries: Record<string, IncomingArtifactValue>;
       truncated: boolean;
     }
   | { type: "function" | "symbol" }
   | { type: "cycle" };
 
+type InspectableValue = IncomingArtifactInput;
+
+const inspectableValueSchema = z.custom<InspectableValue>(() => true);
+
+function parseInspectableValue(value: IncomingArtifactInput): InspectableValue {
+  return inspectableValueSchema.parse(value);
+}
+
 export function describeIncomingArtifactValue(
-  value: unknown,
+  value: IncomingArtifactInput,
   maxDepth = 4,
   maxEntries = 20,
-): IncomingArtifactValueShape {
+): IncomingArtifactValue {
   const seen = new WeakSet<object>();
 
-  const describe = (current: unknown, depth: number): IncomingArtifactValueShape => {
+  const describe = (current: InspectableValue, depth: number): IncomingArtifactValue => {
     if (current === null) return { type: "null" };
 
     if (current === undefined) return { type: "undefined" };
 
-    if (typeof current === "boolean") return { type: "boolean" };
+    const booleanValue = z.boolean().safeParse(current);
 
-    if (typeof current === "number") return { type: "number", finite: Number.isFinite(current) };
+    if (booleanValue.success) return { type: "boolean" };
 
-    if (typeof current === "bigint") return { type: "bigint" };
+    const numberValue = z.number().safeParse(current);
 
-    if (typeof current === "function") return { type: "function" };
+    if (numberValue.success) return { type: "number", finite: Number.isFinite(numberValue.data) };
 
-    if (typeof current === "symbol") return { type: "symbol" };
+    if (z.bigint().safeParse(current).success) return { type: "bigint" };
 
-    if (typeof current === "string") {
+    if (z.function().safeParse(current).success) return { type: "function" };
+
+    if (z.symbol().safeParse(current).success) return { type: "symbol" };
+
+    const stringValue = z.string().safeParse(current);
+
+    if (stringValue.success) {
       return {
         type: "string",
-        kind: classifyValueString(current),
-        length: current.length,
+        kind: classifyValueString(stringValue.data),
+        length: stringValue.data.length,
       };
     }
-
-    if (seen.has(current)) return { type: "cycle" };
-    seen.add(current);
 
     if (Array.isArray(current)) {
       if (depth >= maxDepth) {
@@ -293,7 +319,12 @@ export function describeIncomingArtifactValue(
       };
     }
 
-    const keys = Object.keys(current).sort();
+    const objectValue = z.object({}).passthrough().parse(current);
+
+    if (seen.has(objectValue)) return { type: "cycle" };
+    seen.add(objectValue);
+
+    const keys = Object.keys(objectValue).sort();
 
     if (depth >= maxDepth) {
       return {
@@ -304,13 +335,13 @@ export function describeIncomingArtifactValue(
       };
     }
 
-    const entries: Record<string, IncomingArtifactValueShape> = {};
+    const entries: Record<string, IncomingArtifactValue> = {};
 
     for (const [index, key] of keys.slice(0, maxEntries).entries()) {
-      let entryValue: unknown;
+      let entryValue: InspectableValue;
 
       try {
-        entryValue = (current as Record<string, unknown>)[key];
+        entryValue = inspectableValueSchema.parse(objectValue[key]);
       } catch {
         entryValue = undefined;
       }
@@ -326,25 +357,25 @@ export function describeIncomingArtifactValue(
     };
   };
 
-  return describe(value, 0);
+  return describe(parseInspectableValue(value), 0);
 }
 
 function validateIncomingArtifactSource(source: IncomingArtifactSource): void {
-  if (!source || typeof source !== "object") {
+  if (!source || Object.prototype.toString.call(source) !== "[object Object]") {
     throw new ArtifactError(
       "invalid_incoming_artifact_source",
       "Incoming artifact adapter returned an invalid source.",
     );
   }
 
-  if (typeof source.name !== "string" || source.name.length === 0) {
+  if (Object.prototype.toString.call(source.name) !== "[object String]" || source.name.length === 0) {
     throw new ArtifactError(
       "invalid_incoming_artifact_source",
       "Incoming artifact adapter must provide a filename.",
     );
   }
 
-  if (source.mimeType !== undefined && typeof source.mimeType !== "string") {
+  if (source.mimeType !== undefined && Object.prototype.toString.call(source.mimeType) !== "[object String]") {
     throw new ArtifactError(
       "invalid_incoming_artifact_source",
       "Incoming artifact adapter returned an invalid MIME hint.",
@@ -361,9 +392,9 @@ function validateIncomingArtifactSource(source: IncomingArtifactSource): void {
     );
   }
 
-  const stream = source.stream as Partial<Readable> | undefined;
+  const stream: Partial<Readable> | undefined = source.stream;
 
-  if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
+  if (!stream || Object.prototype.toString.call(stream[Symbol.asyncIterator]) !== "[object Function]") {
     throw new ArtifactError(
       "invalid_incoming_artifact_source",
       "Incoming artifact adapter must provide an async-readable stream.",
@@ -371,7 +402,7 @@ function validateIncomingArtifactSource(source: IncomingArtifactSource): void {
   }
 }
 
-function isOpenAIFileReferenceCandidate(value: unknown): value is Record<string, unknown> {
+function isOpenAIFileReferenceCandidate(value: IncomingArtifactInput): value is OpenAIFileReferenceInput {
   if (!isRecord(value)) return false;
   const keys = Object.keys(value);
 
@@ -381,7 +412,7 @@ function isOpenAIFileReferenceCandidate(value: unknown): value is Record<string,
     && Object.hasOwn(value, "file_id");
 }
 
-function normalizeOpenAIFileReference(value: unknown): OpenAIFileReference {
+function normalizeOpenAIFileReference(value: IncomingArtifactInput): OpenAIFileReference {
   if (!isOpenAIFileReferenceCandidate(value)) {
     throw new ArtifactError(
       "invalid_openai_file_reference",
@@ -391,11 +422,13 @@ function normalizeOpenAIFileReference(value: unknown): OpenAIFileReference {
 
   const downloadUrl = value.download_url;
   const fileId = value.file_id;
+  const parsedDownloadUrl = z.string().safeParse(downloadUrl);
+  const parsedFileId = z.string().safeParse(fileId);
 
   if (
-    typeof downloadUrl !== "string"
-    || typeof fileId !== "string"
-    || !isValidOpenAIFileId(fileId)
+    !parsedDownloadUrl.success
+    || !parsedFileId.success
+    || !isValidOpenAIFileId(parsedFileId.data)
   ) {
     throw new ArtifactError(
       "invalid_openai_file_reference",
@@ -432,29 +465,32 @@ function normalizeOpenAIFileReference(value: unknown): OpenAIFileReference {
   const rawSize = value.size;
 
   if (rawSize !== undefined && rawSize !== null) {
-    if (typeof rawSize !== "number" || !Number.isSafeInteger(rawSize) || rawSize < 0) {
+    const parsedSize = z.number().safeParse(rawSize);
+
+    if (!parsedSize.success || !Number.isSafeInteger(parsedSize.data) || parsedSize.data < 0) {
       throw new ArtifactError(
         "invalid_openai_file_reference",
         "ChatGPT file reference is malformed.",
       );
     }
 
-    size = rawSize;
+    size = parsedSize.data;
   }
 
   return {
-    download_url: downloadUrl,
-    file_id: fileId,
+    download_url: parsedDownloadUrl.data,
+    file_id: parsedFileId.data,
     mime_type: mimeType,
     file_name: normalizedFileName ?? normalizedNameAlias,
     size,
   };
 }
 
-function nullableString(value: unknown): string | undefined | null {
+function nullableString(value: IncomingArtifactInput): string | undefined | null {
   if (value === undefined || value === null) return undefined;
+  const parsed = z.string().safeParse(value);
 
-  return typeof value === "string" ? value : null;
+  return parsed.success ? parsed.data : null;
 }
 
 function normalizeOpenAIFileName(
@@ -474,7 +510,11 @@ function normalizeOpenAIFileName(
 function isValidOpenAIFileId(value: string): boolean {
   return value.length > 0
     && value.length <= OPENAI_FILE_ID_MAX_LENGTH
-    && !OPENAI_FILE_ID_CONTROL_PATTERN.test(value);
+    && !Array.from(value).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+
+      return codePoint <= 0x1F || codePoint === 0x7F;
+    });
 }
 
 function normalizeSuppliedOpenAIFileName(value: string | undefined): string | undefined {
@@ -559,8 +599,8 @@ function responseContentLength(response: Response): number | undefined {
   return Number.isSafeInteger(size) ? size : undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function isRecord(value: IncomingArtifactInput): value is OpenAIFileReferenceInput {
+  return Object.prototype.toString.call(value) === "[object Object]";
 }
 
 function classifyValueString(
@@ -587,11 +627,12 @@ function safeValueEntryKey(value: string, index: number): string {
     : `<redacted-key-${index + 1}>`;
 }
 
-function safeConstructorName(value: object): string | undefined {
+function safeConstructorName(value: IncomingArtifactInput): string | undefined {
   try {
-    const name = value.constructor?.name;
+    const match = /^\[object ([^\]]+)\]$/u.exec(Object.prototype.toString.call(value));
+    const name = match?.[1];
 
-    return typeof name === "string" && name.length <= 80 ? name : undefined;
+    return name && name.length <= 80 ? name : undefined;
   } catch {
     return undefined;
   }
