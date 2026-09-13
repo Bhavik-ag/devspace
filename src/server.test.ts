@@ -18,8 +18,72 @@ import { createMcpServer, createServer } from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
+import { z, type JSONType } from "zod";
 
 const execFileAsync = promisify(execFile);
+
+const jsonValue = z.json();
+
+const structuredSchema = z.object({
+  workspace_id: z.string().optional(),
+  review_ref: z.string().optional(),
+  review: z.object({ available: z.boolean() }).optional(),
+  result: z.string().optional(),
+  instruction: z.string().optional(),
+  agent_providers: z.array(z.object({ id: z.string().optional(), name: z.string().optional(), note: z.string().optional() })).optional(),
+  agents: z.array(z.object({ name: z.string().optional() })).optional(),
+  skills: z.array(z.object({ name: z.string().optional() })).optional(),
+  agents_files: z.array(jsonValue).optional(),
+  available_agents_files: z.array(jsonValue).optional(),
+  skill_diagnostics: z.array(jsonValue).optional(),
+}).passthrough();
+
+const cardSchema = z.object({
+  summary: z.object({ files: z.number().optional(), additions: z.number().optional(), removals: z.number().optional() }).optional(),
+  files: z.array(z.object({ path: z.string(), type: z.string(), additions: z.number(), removals: z.number() })).optional(),
+  payload: z.object({ patch: z.string().optional() }).optional(),
+  workspaceReused: z.boolean().optional(),
+  includeBootstrapContext: z.boolean().optional(),
+  agentsFiles: z.array(jsonValue).optional(),
+  availableAgentsFiles: z.array(jsonValue).optional(),
+  skills: z.array(jsonValue).optional(),
+  agentProviders: z.array(z.object({ note: z.string().optional() })).optional(),
+  agents: z.array(z.unknown()).optional(),
+}).passthrough();
+
+const metadataSchema = z.object({ card: cardSchema.optional(), ui: jsonValue.optional() }).passthrough();
+
+interface JsonSchemaNode {
+  properties?: Record<string, JsonSchemaNode>;
+  items?: JsonSchemaNode;
+  anyOf?: JsonSchemaNode[];
+  oneOf?: JsonSchemaNode[];
+  allOf?: JsonSchemaNode[];
+  maximum?: number;
+  description?: string;
+}
+
+const schemaNode: z.ZodType<JsonSchemaNode> = z.object({
+  properties: z.record(z.string(), z.lazy(() => schemaNode)).optional(),
+  items: z.lazy(() => schemaNode).optional(),
+  anyOf: z.array(z.lazy(() => schemaNode)).optional(),
+  oneOf: z.array(z.lazy(() => schemaNode)).optional(),
+  allOf: z.array(z.lazy(() => schemaNode)).optional(),
+  maximum: z.number().optional(),
+  description: z.string().optional(),
+});
+
+const discoveryBodySchema = z.object({ result: z.object({ supportedVersions: z.array(z.string()).optional() }).optional() });
+
+const toolsListBodySchema = z.object({ result: z.object({ tools: z.array(z.object({ name: z.string().optional() })).optional() }).optional() });
+
+const callBodySchema = z.object({ result: z.object({ structuredContent: structuredSchema.optional() }).optional() });
+
+const clientBodySchema = z.object({ client_id: z.string().optional() });
+
+const tokenBodySchema = z.object({ access_token: z.string().optional() });
+
+const mcpParamsSchema = z.object({ name: z.string().optional(), uri: z.string().optional(), _meta: z.record(z.string(), jsonValue).optional() }).passthrough();
 
 test("tool modes expose the expected host-facing tool surface", async (t) => {
   const cases: Array<{
@@ -56,10 +120,10 @@ test("model-facing tool schemas use snake_case recursively", async (t) => {
       const tools = await context.client.listTools();
 
       const invalidPaths = tools.tools.flatMap((tool) => [
-        ...schemaPropertyPaths(tool.inputSchema)
+        ...schemaPropertyPaths(tool.inputSchema ? schemaNode.parse(tool.inputSchema) : undefined)
           .filter(({ key }) => !/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(key))
           .map(({ path }) => `${tool.name}.input.${path}`),
-        ...schemaPropertyPaths(tool.outputSchema)
+        ...schemaPropertyPaths(tool.outputSchema ? schemaNode.parse(tool.outputSchema) : undefined)
           .filter(({ key }) => !/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(key))
           .map(({ path }) => `${tool.name}.output.${path}`),
       ]);
@@ -76,10 +140,7 @@ test("Codex process tools bound model-facing yield windows to 12 seconds", async
   for (const toolName of ["exec_command", "write_stdin"] as const) {
     const tool = tools.tools.find(({ name }) => name === toolName);
 
-    const yieldSchema = tool?.inputSchema?.properties?.yield_time_ms as {
-      maximum?: number;
-      description?: string;
-    } | undefined;
+    const yieldSchema = schemaNode.parse(tool?.inputSchema).properties?.yield_time_ms;
 
     assert.equal(yieldSchema?.maximum, 12_000);
     assert.match(yieldSchema?.description ?? "", /maximum 12000/i);
@@ -93,7 +154,7 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
     await callOpen(context.client, context.project, "snake-case-claude"),
   ).workspace_id;
 
-  assert.equal(typeof workspaceId, "string");
+  z.string().parse(workspaceId);
 
   await writeFile(join(context.project, "note.txt"), "before\n");
   await mkdir(join(context.project, "nested"));
@@ -119,7 +180,7 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
     },
   }));
 
-  assert.match(shell.result as string, /nested/i);
+  assert.match(z.string().parse(shell.result), /nested/i);
 });
 
 test("UI metadata is limited to workspace and aggregate review", async (t) => {
@@ -129,7 +190,7 @@ test("UI metadata is limited to workspace and aggregate review", async (t) => {
       const tools = await context.client.listTools();
 
       const toolsWithUi = tools.tools
-        .filter((tool) => Boolean((tool._meta as { ui?: unknown } | undefined)?.ui))
+        .filter((tool) => Boolean(metadataSchema.parse(tool._meta ?? {}).ui))
         .map((tool) => tool.name)
         .sort();
 
@@ -145,7 +206,8 @@ test("open_workspace reports aggregate review availability", async (t) => {
   const plainReview = structuredContent(await callOpen(plain.client, plain.project, "plain")).review;
   const gitReview = structuredContent(await callOpen(gitWorkspace.client, gitWorkspace.project, "git")).review;
 
-  assert.equal((plainReview as { available: boolean }).available, false);
+  assert.ok(plainReview);
+  assert.equal(plainReview.available, false);
   assert.deepEqual(gitReview, { available: true });
 });
 
@@ -157,7 +219,7 @@ test("show_changes keeps model output compact and preserves the rich review card
   );
 
   const workspaceId = opened.workspace_id;
-  assert.equal(typeof workspaceId, "string");
+  z.string().parse(workspaceId);
 
   await writeFile(join(context.project, "README.md"), "goodbye\n");
 
@@ -167,11 +229,11 @@ test("show_changes keeps model output compact and preserves the rich review card
   });
 
   const structured = structuredContent(review);
-  assert.equal((review._meta as Record<string, unknown> | undefined)?.tool, undefined);
+  assert.equal(metadataSchema.parse(review._meta ?? {}).tool, undefined);
 
   assert.equal(structured.workspace_id, workspaceId);
   assert.equal("workspaceId" in structured, false);
-  assert.match(structured.review_ref as string, /^[0-9a-f]{40,64}$/);
+  assert.match(z.string().parse(structured.review_ref), /^[0-9a-f]{40,64}$/);
   assert.equal("summary" in structured, false);
   assert.equal("files" in structured, false);
   assert.equal("patch" in structured, false);
@@ -191,7 +253,7 @@ test("show_changes keeps model output compact and preserves the rich review card
     },
   ]);
   assert.match(
-    ((card.payload as { patch?: string } | undefined)?.patch) ?? "",
+    card.payload?.patch ?? "",
     /-hello\n\+goodbye/,
   );
 
@@ -220,7 +282,7 @@ test("show_changes can reopen a historical review without advancing the checkpoi
     await callOpen(context.client, context.project, "review-history"),
   ).workspace_id;
 
-  assert.equal(typeof workspaceId, "string");
+  z.string().parse(workspaceId);
 
   await writeFile(join(context.project, "README.md"), "first\n");
 
@@ -230,7 +292,7 @@ test("show_changes can reopen a historical review without advancing the checkpoi
   }));
 
   const reviewRef = first.review_ref;
-  assert.equal(typeof reviewRef, "string");
+  z.string().parse(reviewRef);
 
   await writeFile(join(context.project, "README.md"), "second\n");
 
@@ -238,11 +300,11 @@ test("show_changes can reopen a historical review without advancing the checkpoi
     name: "show_changes",
     arguments: { workspace_id: workspaceId },
     _meta: { "devspace/reviewRef": reviewRef },
-  } as Parameters<Client["callTool"]>[0]);
+  });
 
   assert.equal(structuredContent(reopened).review_ref, reviewRef);
   assert.match(
-    (((responseCard(reopened).payload as { patch?: string } | undefined)?.patch) ?? ""),
+    responseCard(reopened).payload?.patch ?? "",
     /\+first/,
   );
 
@@ -252,7 +314,7 @@ test("show_changes can reopen a historical review without advancing the checkpoi
   });
 
   assert.match(
-    (((responseCard(current).payload as { patch?: string } | undefined)?.patch) ?? ""),
+    responseCard(current).payload?.patch ?? "",
     /-first\n\+second/,
   );
 });
@@ -266,25 +328,23 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
 
   const first = await callOpen(context.client, context.project, "chat-1");
   const repeated = await callOpen(context.client, context.project, "chat-1");
-  assert.equal((first._meta as Record<string, unknown> | undefined)?.tool, undefined);
-  assert.equal((repeated._meta as Record<string, unknown> | undefined)?.tool, undefined);
+  assert.equal(metadataSchema.parse(first._meta ?? {}).tool, undefined);
+  assert.equal(metadataSchema.parse(repeated._meta ?? {}).tool, undefined);
 
   const tools = await context.client.listTools();
   const openTool = tools.tools.find((tool) => tool.name === "open_workspace");
-  const outputProperties = (openTool?.outputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+  const outputProperties = schemaNode.parse(openTool?.outputSchema).properties;
   assert.ok(outputProperties && "workspace_id" in outputProperties);
   assert.equal(outputProperties && "workspaceId" in outputProperties, false);
   assert.equal(outputProperties && "workspaceReused" in outputProperties, false);
   assert.equal(outputProperties && "includeBootstrapContext" in outputProperties, false);
 
-  const providerSchema = outputProperties?.agent_providers as {
-    items?: { properties?: Record<string, unknown> };
-  } | undefined;
+  const providerSchema = schemaNode.parse(outputProperties?.agent_providers);
 
   assert.ok(providerSchema?.items?.properties?.note);
 
   const firstStructured = structuredContent(first);
-  assert.equal(typeof firstStructured.workspace_id, "string");
+  z.string().parse(firstStructured.workspace_id);
   assert.equal("workspaceId" in firstStructured, false);
   assert.equal(firstStructured.workspace_id, structuredContent(repeated).workspace_id);
   assert.ok(Array.isArray(firstStructured.agents_files));
@@ -292,11 +352,11 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.ok(Array.isArray(firstStructured.skills));
   assert.ok(Array.isArray(firstStructured.agent_providers));
   assert.equal(
-    (firstStructured.agent_providers as Array<Record<string, unknown>>)[0]?.id,
+    firstStructured.agent_providers?.[0]?.id,
     "codex",
   );
   assert.equal(
-    (firstStructured.agent_providers as Array<Record<string, unknown>>)[0]?.note,
+    firstStructured.agent_providers?.[0]?.note,
     providerNote,
   );
   assert.ok(Array.isArray(firstStructured.agents));
@@ -305,10 +365,10 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal("includeBootstrapContext" in firstStructured, false);
 
   const repeatedStructured = structuredContent(repeated);
-  assert.match(firstStructured.instruction as string, /workspace_id/);
-  assert.match(repeatedStructured.instruction as string, /workspace_id/);
-  assert.doesNotMatch(firstStructured.instruction as string, /workspaceId/);
-  assert.doesNotMatch(repeatedStructured.instruction as string, /workspaceId/);
+  assert.match(z.string().parse(firstStructured.instruction), /workspace_id/);
+  assert.match(z.string().parse(repeatedStructured.instruction), /workspace_id/);
+  assert.doesNotMatch(z.string().parse(firstStructured.instruction), /workspaceId/);
+  assert.doesNotMatch(z.string().parse(repeatedStructured.instruction), /workspaceId/);
   assert.equal(repeatedStructured.agents_files, undefined);
   assert.equal(repeatedStructured.available_agents_files, undefined);
   assert.equal(repeatedStructured.skills, undefined);
@@ -326,7 +386,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.ok(Array.isArray(card.skills));
   assert.ok(Array.isArray(card.agentProviders));
   assert.equal(
-    (card.agentProviders as Array<Record<string, unknown>>)[0]?.note,
+    card.agentProviders?.[0]?.note,
     providerNote,
   );
   assert.ok(Array.isArray(card.agents));
@@ -346,11 +406,11 @@ test("open_workspace refreshes provider availability for each catalog", async (t
   available = true;
   const usable = structuredContent(await callOpen(context.client, context.project, "chat-2"));
   assert.equal(
-    (usable.agent_providers as Array<Record<string, unknown>>)[0]?.id,
+    usable.agent_providers?.[0]?.id,
     "codex",
   );
   assert.equal(
-    (usable.agents as Array<Record<string, unknown>>)[0]?.name,
+    usable.agents?.[0]?.name,
     "reviewer",
   );
 });
@@ -373,7 +433,7 @@ test("open_workspace omits providers disabled by configuration", async (t) => {
 
   const opened = structuredContent(await callOpen(context.client, context.project, "chat-1"));
   assert.deepEqual(
-    (opened.agent_providers as Array<Record<string, unknown>>).map((provider) => provider.id),
+    opened.agent_providers?.map((provider) => provider.id),
     ["codex"],
   );
 });
@@ -384,7 +444,7 @@ test("open_workspace advertises subagent instructions on demand by default", asy
   });
 
   const opened = structuredContent(await callOpen(context.client, context.project, "chat-1"));
-  const skills = opened.skills as Array<Record<string, unknown>>;
+  const skills = opened.skills ?? [];
   assert.equal(skills.some((skill) => skill.name === "subagents"), true);
   assert.doesNotMatch(String(opened.instruction), /# DevSpace subagents/);
 });
@@ -400,7 +460,7 @@ test("open_workspace preloads subagent instructions when configured", async (t) 
   });
 
   const opened = structuredContent(await callOpen(context.client, context.project, "chat-1"));
-  const skills = opened.skills as Array<Record<string, unknown>>;
+  const skills = opened.skills ?? [];
   assert.equal(skills.some((skill) => skill.name === "subagents"), false);
   assert.match(String(opened.instruction), /# DevSpace subagents/);
 });
@@ -444,9 +504,7 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
 
   assert.equal(discovery.status, 200, await discovery.clone().text());
 
-  const discoveryBody = await discovery.json() as {
-    result?: { supportedVersions?: string[] };
-  };
+  const discoveryBody = discoveryBodySchema.parse(await discovery.json());
 
   assert.ok(discoveryBody.result?.supportedVersions?.includes("2026-07-28"));
 
@@ -459,9 +517,7 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
 
   assert.equal(listed.status, 200, await listed.clone().text());
 
-  const listBody = await listed.json() as {
-    result?: { tools?: Array<{ name?: string }> };
-  };
+  const listBody = toolsListBodySchema.parse(await listed.json());
 
   assert.ok(listBody.result?.tools?.some((tool) => tool.name === "open_workspace"));
 
@@ -478,12 +534,10 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
 
   assert.equal(called.status, 200, await called.clone().text());
 
-  const callBody = await called.json() as {
-    result?: { structuredContent?: { workspace_id?: string; agents_files?: unknown[] } };
-  };
+  const callBody = callBodySchema.parse(await called.json());
 
   const workspaceId = callBody.result?.structuredContent?.workspace_id;
-  assert.equal(typeof workspaceId, "string");
+  z.string().parse(workspaceId);
 
   const repeated = await postModernMcp(
     localBaseUrl,
@@ -498,9 +552,7 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
 
   assert.equal(repeated.status, 200, await repeated.clone().text());
 
-  const repeatedBody = await repeated.json() as {
-    result?: { structuredContent?: { workspace_id?: string; agents_files?: unknown[] } };
-  };
+  const repeatedBody = callBodySchema.parse(await repeated.json());
 
   assert.equal(repeatedBody.result?.structuredContent?.workspace_id, workspaceId);
   assert.equal(repeatedBody.result?.structuredContent?.agents_files, undefined);
@@ -565,12 +617,10 @@ test("server shutdown waits for an active MCP tool call", async (t) => {
     },
   );
 
-  const openBody = await opened.json() as {
-    result?: { structuredContent?: { workspace_id?: string } };
-  };
+  const openBody = callBodySchema.parse(await opened.json());
 
   const workspaceId = openBody.result?.structuredContent?.workspace_id;
-  assert.equal(typeof workspaceId, "string");
+  z.string().parse(workspaceId);
 
   const command = [
     "const fs=require('node:fs')",
@@ -615,28 +665,20 @@ interface ServerFixture {
 }
 
 function schemaPropertyPaths(
-  schema: unknown,
+  schema: JsonSchemaNode | undefined,
   prefix = "",
 ): Array<{ key: string; path: string }> {
-  if (!schema || typeof schema !== "object") return [];
+  if (!schema) return [];
 
-  const record = schema as {
-    properties?: Record<string, unknown>;
-    items?: unknown;
-    anyOf?: unknown[];
-    oneOf?: unknown[];
-    allOf?: unknown[];
-  };
-
-  const paths = Object.entries(record.properties ?? {}).flatMap(([key, child]) => {
+  const paths = Object.entries(schema.properties ?? {}).flatMap(([key, child]) => {
     const path = prefix ? `${prefix}.${key}` : key;
 
     return [{ key, path }, ...schemaPropertyPaths(child, path)];
   });
 
-  if (record.items) paths.push(...schemaPropertyPaths(record.items, `${prefix}[]`));
+  if (schema.items) paths.push(...schemaPropertyPaths(schema.items, `${prefix}[]`));
 
-  for (const variant of [record.anyOf, record.oneOf, record.allOf]) {
+  for (const variant of [schema.anyOf, schema.oneOf, schema.allOf]) {
     for (const child of variant ?? []) {
       paths.push(...schemaPropertyPaths(child, prefix));
     }
@@ -683,8 +725,7 @@ async function httpServerFixture(
     await rm(root, { recursive: true, force: true });
   });
 
-  const address = httpServer.address();
-  assert.ok(address && typeof address === "object");
+  const address = z.object({ port: z.number() }).parse(httpServer.address());
   const localBaseUrl = `http://127.0.0.1:${address.port}`;
 
   const accessToken = await issueTestAccessToken(
@@ -733,7 +774,7 @@ async function fixture(
     await git(project, ["commit", "-m", "Initial commit"]);
   }
 
-  const initialProviderAvailability = typeof options.localAgentProviders === "function"
+  const initialProviderAvailability = options.localAgentProviders instanceof Function
     ? options.localAgentProviders()
     : options.localAgentProviders ?? [];
 
@@ -769,7 +810,7 @@ async function fixture(
     : modeConfig;
 
   const resolveProviderAvailability: () => LocalAgentProviderAvailability[] =
-    typeof options.localAgentProviders === "function"
+    options.localAgentProviders instanceof Function
       ? options.localAgentProviders
       : () => initialProviderAvailability;
 
@@ -856,7 +897,7 @@ async function issueTestAccessToken(
   });
 
   assert.equal(registration.status, 201, await registration.clone().text());
-  const client = await registration.json() as { client_id?: string };
+  const client = clientBodySchema.parse(await registration.json());
   assert.ok(client.client_id);
 
   const approval = await fetch(`${localBaseUrl}/authorize`, {
@@ -896,7 +937,7 @@ async function issueTestAccessToken(
   });
 
   assert.equal(exchange.status, 200, await exchange.clone().text());
-  const tokens = await exchange.json() as { access_token?: string };
+  const tokens = tokenBodySchema.parse(await exchange.json());
   assert.ok(tokens.access_token);
 
   return tokens.access_token;
@@ -906,23 +947,23 @@ function postModernMcp(
   localBaseUrl: string,
   accessToken: string | undefined,
   method: string,
-  params: Record<string, unknown>,
+  params: z.infer<typeof mcpParamsSchema>,
 ): Promise<Response> {
-  const mcpName = typeof params.name === "string"
-    ? params.name
-    : typeof params.uri === "string"
-      ? params.uri
-      : undefined;
+  const mcpName = params.name ?? params.uri;
+
+  const headers = new Headers({
+    "content-type": "application/json",
+    "mcp-method": method,
+    "mcp-protocol-version": "2026-07-28",
+  });
+
+  if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
+
+  if (mcpName) headers.set("mcp-name", mcpName);
 
   return fetch(`${localBaseUrl}/mcp`, {
     method: "POST",
-    headers: {
-      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
-      "content-type": "application/json",
-      "mcp-method": method,
-      "mcp-protocol-version": "2026-07-28",
-      ...(mcpName ? { "mcp-name": mcpName } : {}),
-    },
+    headers,
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: `modern-${method}`,
@@ -943,10 +984,8 @@ function postModernMcp(
   });
 }
 
-function recordValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
+function recordValue(value: Record<string, JSONType> | undefined): Record<string, JSONType> {
+  return z.record(z.string(), jsonValue).parse(value ?? {});
 }
 
 async function callOpen(
@@ -954,28 +993,22 @@ async function callOpen(
   path: string,
   conversationScopeId?: string,
 ): Promise<Awaited<ReturnType<Client["callTool"]>>> {
-  const params = {
+  const params: Parameters<Client["callTool"]>[0] = {
     name: "open_workspace",
     arguments: { path },
-    ...(conversationScopeId
-      ? { _meta: { "openai/session": conversationScopeId } }
-      : {}),
-  } as Parameters<Client["callTool"]>[0];
+  };
+
+  if (conversationScopeId) params._meta = { "openai/session": conversationScopeId };
 
   return client.callTool(params);
 }
 
-function structuredContent(result: Awaited<ReturnType<Client["callTool"]>>): Record<string, unknown> {
+function structuredContent(result: Awaited<ReturnType<Client["callTool"]>>): z.infer<typeof structuredSchema> {
   assert.ok(result.structuredContent);
 
-  return result.structuredContent as Record<string, unknown>;
+  return structuredSchema.parse(result.structuredContent);
 }
 
-function responseCard(result: Awaited<ReturnType<Client["callTool"]>>): Record<string, unknown> {
-  const metadata = result._meta;
-  assert.ok(metadata && typeof metadata === "object");
-  const card = (metadata as Record<string, unknown>).card;
-  assert.ok(card && typeof card === "object");
-
-  return card as Record<string, unknown>;
+function responseCard(result: Awaited<ReturnType<Client["callTool"]>>): z.infer<typeof cardSchema> {
+  return cardSchema.parse(metadataSchema.parse(result._meta).card);
 }

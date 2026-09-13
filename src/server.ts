@@ -3,7 +3,10 @@ import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import {
+  createMcpExpressApp,
+  type CreateMcpExpressAppOptions,
+} from "@modelcontextprotocol/sdk/server/express.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import { resourceUrlFromServerUrl } from "@modelcontextprotocol/sdk/shared/auth-utils.js";
@@ -72,6 +75,14 @@ import {
   type ToolContent,
   type ToolSurface,
 } from "./tool-surfaces/types.js";
+import type {
+  AnySchema,
+} from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import type {
+  RegisteredTool,
+  ToolCallback,
+} from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 const WORKSPACE_APP_MANIFEST_ENTRY = "workspace-app.html";
 
@@ -119,7 +130,23 @@ interface WorkspaceAppManifestEntry {
   isEntry?: boolean;
 }
 
-type WorkspaceAppManifest = Record<string, WorkspaceAppManifestEntry>;
+interface WorkspaceAppManifest {
+  [entry: string]: WorkspaceAppManifestEntry;
+}
+
+interface RequestLogFields {
+  ip: string | undefined;
+  host: string | undefined;
+  userAgent: string | undefined;
+  origin: string | undefined;
+  referer: string | undefined;
+  contentLength: string | undefined;
+}
+
+interface AppCsp {
+  resourceDomains: string[];
+  connectDomains: string[];
+}
 
 function serverInstructions(
   config: ServerConfig,
@@ -213,7 +240,7 @@ function sendJsonRpcError(
   });
 }
 
-function requestLogFields(req: Request, config: ServerConfig): Record<string, unknown> {
+function requestLogFields(req: Request, config: ServerConfig): RequestLogFields {
   return {
     ip: requestIp(req, config.logging.trustProxy),
     host: req.header("host"),
@@ -233,7 +260,15 @@ function uiManifestUrl(): URL {
 }
 
 function readWorkspaceAppManifest(): WorkspaceAppManifest {
-  return JSON.parse(readFileSync(uiManifestUrl(), "utf8")) as WorkspaceAppManifest;
+  const manifestValue: unknown = JSON.parse(readFileSync(uiManifestUrl(), "utf8"));
+
+  const manifestSchema = z.record(z.string(), z.object({
+    file: z.string(),
+    css: z.array(z.string()).optional(),
+    isEntry: z.boolean().optional(),
+  }));
+
+  return manifestSchema.parse(manifestValue);
 }
 
 function getWorkspaceAppManifestEntry(): WorkspaceAppManifestEntry {
@@ -279,10 +314,7 @@ ${stylesheets}
 </html>`;
 }
 
-function appCsp(config: ServerConfig): {
-  resourceDomains: string[];
-  connectDomains: string[];
-} {
+function appCsp(config: ServerConfig): AppCsp {
   const publicBaseUrl = config.publicBaseUrl.replace(/\/+$/, "");
 
   return {
@@ -574,6 +606,36 @@ function registerMcpSurface(
         },
       ];
 
+      const structuredContent = {
+        workspace_id: workspace.id,
+        root: workspace.root,
+        mode: workspace.mode,
+        source_root: workspace.sourceRoot,
+        worktree: workspace.worktree
+          ? {
+              path: workspace.worktree.path,
+              base_ref: workspace.worktree.baseRef,
+              base_sha: workspace.worktree.baseSha,
+              dirty_source: workspace.worktree.dirtySource,
+              detached: workspace.worktree.detached,
+              managed: workspace.worktree.managed,
+            }
+          : undefined,
+        review,
+        instruction,
+      };
+
+      if (includeBootstrapContext) {
+        Object.assign(structuredContent, {
+          agents_files: loadedAgentsFiles,
+          available_agents_files: availableAgentsFileOutputs,
+          skills: visibleSkills,
+          agent_providers: visibleAgentProviders,
+          agents: visibleAgents,
+          skill_diagnostics: workspace.skillDiagnostics,
+        });
+      }
+
       logToolCall(config, {
         tool: "open_workspace",
         workspaceId: workspace.id,
@@ -611,34 +673,7 @@ function registerMcpSurface(
             },
           },
         },
-        structuredContent: {
-          workspace_id: workspace.id,
-          root: workspace.root,
-          mode: workspace.mode,
-          source_root: workspace.sourceRoot,
-          worktree: workspace.worktree
-            ? {
-                path: workspace.worktree.path,
-                base_ref: workspace.worktree.baseRef,
-                base_sha: workspace.worktree.baseSha,
-                dirty_source: workspace.worktree.dirtySource,
-                detached: workspace.worktree.detached,
-                managed: workspace.worktree.managed,
-              }
-            : undefined,
-          review,
-          ...(includeBootstrapContext
-            ? {
-                agents_files: loadedAgentsFiles,
-                available_agents_files: availableAgentsFileOutputs,
-                skills: visibleSkills,
-                agent_providers: visibleAgentProviders,
-                agents: visibleAgents,
-                skill_diagnostics: workspace.skillDiagnostics,
-              }
-            : {}),
-          instruction,
-        },
+        structuredContent,
       };
     },
   );
@@ -755,9 +790,8 @@ function registerMcpSurface(
       const workspaceId = workspace_id;
       const workspace = await workspaces.getWorkspace(workspaceId);
 
-      const reviewRef = typeof _meta?.["devspace/reviewRef"] === "string"
-        ? _meta["devspace/reviewRef"]
-        : undefined;
+      const reviewMeta = z.object({ "devspace/reviewRef": z.string() }).safeParse(_meta);
+      const reviewRef = reviewMeta.success ? reviewMeta.data["devspace/reviewRef"] : undefined;
 
       const review = reviewRef
         ? await reviewCheckpoints.reviewByRef({
@@ -813,17 +847,45 @@ function withTrackedToolHandlers(
   server: McpRegistrationTarget,
   trackToolActivity: TrackToolActivity,
 ): McpRegistrationTarget {
-  return {
-    registerTool: ((...args: unknown[]) => {
-      const handler = args.at(-1) as (...handlerArgs: unknown[]) => unknown;
+  type ToolInputFields = Record<string, AnySchema>;
 
-      return (server.registerTool as (...callArgs: unknown[]) => unknown)(
-        ...args.slice(0, -1),
-        (...handlerArgs: unknown[]) => trackToolActivity(
-          () => Promise.resolve(handler(...handlerArgs)),
-        ),
-      );
-    }) as McpRegistrationTarget["registerTool"],
+  type ToolRegistrationMetadata = Omit<
+    Parameters<McpRegistrationTarget["registerTool"]>[1],
+    "inputSchema" | "outputSchema"
+  >;
+
+  type ToolSchema = AnySchema | ToolInputFields;
+
+  type ToolRegistrationConfig<
+    OutputArgs extends ToolSchema,
+    InputArgs extends undefined | ToolSchema,
+  > = ToolRegistrationMetadata & {
+    inputSchema?: InputArgs;
+    outputSchema?: OutputArgs;
+  };
+
+  type ToolHandler = (...args: never[]) => CallToolResult | Promise<CallToolResult>;
+
+  function trackHandler<InputArgs extends undefined | ToolSchema>(
+    handler: ToolCallback<InputArgs>,
+  ): ToolCallback<InputArgs>;
+  function trackHandler(handler: ToolHandler): ToolHandler {
+    return (...handlerArgs) => trackToolActivity(
+      () => Promise.resolve(handler(...handlerArgs)),
+    );
+  }
+
+  const registerTool: McpRegistrationTarget["registerTool"] = <
+    OutputArgs extends ToolSchema,
+    InputArgs extends undefined | ToolSchema = undefined,
+  >(
+    name: string,
+    config: ToolRegistrationConfig<OutputArgs, InputArgs>,
+    handler: ToolCallback<InputArgs>,
+  ): RegisteredTool => server.registerTool(name, config, trackHandler(handler));
+
+  return {
+    registerTool,
     registerResource: server.registerResource.bind(server),
   };
 }
@@ -843,10 +905,12 @@ export function createServer(
     ? undefined
     : Array.from(new Set([config.host, ...config.allowedHosts]));
 
-  const app = createMcpExpressApp({
+  const appOptions: CreateMcpExpressAppOptions = {
     host: config.host,
-    ...(allowedHosts ? { allowedHosts } : {}),
-  });
+  };
+
+  if (allowedHosts) appOptions.allowedHosts = allowedHosts;
+  const app = createMcpExpressApp(appOptions);
 
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
@@ -974,10 +1038,10 @@ export function createServer(
   });
 
   app.all("/mcp", async (req, res) => {
-    const requestId = res.locals.requestId as string | undefined;
+    const requestId = res.locals.requestId;
 
     await new Promise<void>((resolve, reject) => {
-      bearerAuth(req, res, (error?: unknown) => {
+      bearerAuth(req, res, (error) => {
         if (error) reject(error);
         else resolve();
       });
