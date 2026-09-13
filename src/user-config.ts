@@ -48,8 +48,10 @@ export interface DevspaceFiles {
 
 export interface DevspaceConfigEdit {
   path: (string | number)[];
-  value: unknown;
+  value: DevspaceConfigEditValue;
 }
+
+type DevspaceConfigEditValue = string | number | boolean | null | DevspaceConfigEditValue[] | { [key: string]: DevspaceConfigEditValue };
 
 export function devspaceConfigDir(env: NodeJS.ProcessEnv = process.env): string {
   return resolve(expandHomePath(env.DEVSPACE_CONFIG_DIR ?? join(homedir(), ".devspace")));
@@ -117,7 +119,7 @@ export function writeDevspaceConfig(
 
 export function setDevspaceConfigValue(
   path: (string | number)[],
-  value: unknown,
+  value: DevspaceConfigEditValue,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   return setDevspaceConfigValues([{ path, value }], env);
@@ -176,7 +178,7 @@ function migrateLegacyConfigFile(
   let migrated: DevspaceConfig;
 
   try {
-    migrated = migrateLegacyConfig(JSON.parse(readFileSync(legacyPath, "utf8")) as unknown);
+    migrated = migrateLegacyConfig(JSON.parse(readFileSync(legacyPath, "utf8")));
   } catch (error) {
     throw fileError("migrate", legacyPath, error);
   }
@@ -268,18 +270,18 @@ function temporaryFilePath(filePath: string): string {
 
 function readJsonFile<T>(filePath: string, schema: z.ZodType<T>): T {
   try {
-    return schema.parse(JSON.parse(readFileSync(filePath, "utf8")) as unknown);
+    return schema.parse(JSON.parse(readFileSync(filePath, "utf8")));
   } catch (error) {
     throw fileError("read", filePath, error);
   }
 }
 
-function writeJsonFile(filePath: string, value: unknown, mode: number): void {
+function writeJsonFile(filePath: string, value: DevspaceAuthConfig, mode: number): void {
   writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { mode });
 }
 
-function fileError(action: "read" | "migrate", filePath: string, error: unknown): Error {
-  const reason = error instanceof Error ? error.message : String(error);
+function fileError(action: "read" | "migrate", filePath: string, cause: unknown): Error {
+  const reason = cause instanceof Error ? cause.message : String(cause);
 
   return new DevspaceConfigFileError(`Unable to ${action} ${filePath}: ${reason}`);
 }

@@ -117,32 +117,32 @@ export class LocalAgentStore {
 
     if (scope.workspaceId && scope.workspaceRoot) {
       rows = this.database.sqlite
-        .prepare(
+        .prepare<[string, string], LocalAgentRow>(
           `select * from local_agent_sessions
            where workspace_id = ? and workspace_root = ?
            order by updated_at desc`,
         )
-        .all(scope.workspaceId, resolve(scope.workspaceRoot)) as LocalAgentRow[];
+        .all(scope.workspaceId, resolve(scope.workspaceRoot));
     } else if (scope.workspaceId) {
       rows = this.database.sqlite
-        .prepare(
+        .prepare<[string], LocalAgentRow>(
           `select * from local_agent_sessions
            where workspace_id = ?
            order by updated_at desc`,
         )
-        .all(scope.workspaceId) as LocalAgentRow[];
+        .all(scope.workspaceId);
     } else if (scope.workspaceRoot) {
       rows = this.database.sqlite
-        .prepare(
+        .prepare<[string], LocalAgentRow>(
           `select * from local_agent_sessions
            where workspace_root = ?
            order by updated_at desc`,
         )
-        .all(resolve(scope.workspaceRoot)) as LocalAgentRow[];
+        .all(resolve(scope.workspaceRoot));
     } else {
       rows = this.database.sqlite
-        .prepare("select * from local_agent_sessions order by updated_at desc")
-        .all() as LocalAgentRow[];
+        .prepare<[], LocalAgentRow>("select * from local_agent_sessions order by updated_at desc")
+        .all();
     }
 
     return rows.map(rowToLocalAgentRecord);
@@ -205,12 +205,12 @@ export class LocalAgentStore {
 
   getById(id: string): LocalAgentRecord | undefined {
     const exact = this.database.sqlite
-      .prepare(
+      .prepare<[string], LocalAgentRow>(
         `select * from local_agent_sessions
          where id = ?
          limit 1`,
       )
-      .get(id) as LocalAgentRow | undefined;
+      .get(id);
 
     return exact ? rowToLocalAgentRecord(exact) : undefined;
   }
@@ -405,8 +405,8 @@ export class LocalAgentStore {
 
   getTurnById(turnId: number): LocalAgentTurnRecord | undefined {
     const row = this.database.sqlite
-      .prepare("select * from local_agent_turns where id = ? limit 1")
-      .get(turnId) as LocalAgentTurnRow | undefined;
+      .prepare<[number], LocalAgentTurnRow>("select * from local_agent_turns where id = ? limit 1")
+      .get(turnId);
 
     return row ? rowToLocalAgentTurnRecord(row) : undefined;
   }
@@ -419,8 +419,10 @@ export class LocalAgentStore {
 
   getLatestTurn(agentId: string): LocalAgentTurnRecord | undefined {
     const row = this.database.sqlite
-      .prepare("select * from local_agent_turns where agent_id = ? order by id desc limit 1")
-      .get(agentId) as LocalAgentTurnRow | undefined;
+      .prepare<[string], LocalAgentTurnRow>(
+        "select * from local_agent_turns where agent_id = ? order by id desc limit 1",
+      )
+      .get(agentId);
 
     return row ? rowToLocalAgentTurnRecord(row) : undefined;
   }
@@ -433,8 +435,10 @@ export class LocalAgentStore {
 
   listTurns(agentId: string): LocalAgentTurnRecord[] {
     const rows = this.database.sqlite
-      .prepare("select * from local_agent_turns where agent_id = ? order by id asc")
-      .all(agentId) as LocalAgentTurnRow[];
+      .prepare<[string], LocalAgentTurnRow>(
+        "select * from local_agent_turns where agent_id = ? order by id asc",
+      )
+      .all(agentId);
 
     return rows.map(rowToLocalAgentTurnRecord);
   }
