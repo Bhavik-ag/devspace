@@ -171,7 +171,7 @@ await assert.rejects(
     workspaceId: scope.workspaceId,
     workspaceRoot: root,
   }),
-  (error: unknown) => Panic.is(error) && error.cause instanceof TypeError,
+  (error: Error) => Panic.is(error) && error.cause instanceof TypeError,
 );
 
 await defectManager.close();

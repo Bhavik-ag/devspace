@@ -36,6 +36,7 @@ import {
   isSubagentProviderEnabled,
   type SubagentsConfig,
 } from "./local-agent-config.js";
+import type { JSONType } from "zod";
 
 export interface StartLocalAgentInput {
   target: string;
@@ -54,7 +55,7 @@ export interface RunOverrides {
 }
 
 export interface LocalAgentManagerLogger {
-  (level: "info" | "warn" | "error", event: string, fields: Record<string, unknown>): void;
+  (level: "info" | "warn" | "error", event: string, fields: Record<string, JSONType | undefined>): void;
 }
 
 export interface LocalAgentManagerOptions {
@@ -124,25 +125,23 @@ export class LocalAgentManager {
   }
 
   async start(input: StartLocalAgentInput): Promise<BetterResult<LocalAgentRecord, AgentStartError>> {
-    const manager = this;
+    return Result.gen(async function* (this: LocalAgentManager) {
+      yield* this.acceptingResult("start");
 
-    return Result.gen(async function* () {
-      yield* manager.acceptingResult("start");
-
-      const workspaceRoot = yield* manager.authorizeWorkspace(
+      const workspaceRoot = yield* this.authorizeWorkspace(
         input.workspaceRoot,
         input.workspaceId,
         "start",
       );
 
-      const profiles = yield* Result.await(manager.loadProfilesResult(workspaceRoot, input.target));
+      const profiles = yield* Result.await(this.loadProfilesResult(workspaceRoot, input.target));
 
       const target = resolveLocalAgentTarget(
         input.target,
         profiles,
         input.model,
         input.effort,
-        manager.subagents.providers,
+        this.subagents.providers,
       );
 
       if (!target) {
@@ -164,10 +163,10 @@ export class LocalAgentManager {
         }));
       }
 
-      yield* manager.providerEnabledResult(target.provider, target.name, "start");
-      yield* manager.driverResult(target.provider, "start");
+      yield* this.providerEnabledResult(target.provider, target.name, "start");
+      yield* this.driverResult(target.provider, "start");
 
-      const record = yield* manager.store.createResult({
+      const record = yield* this.store.createResult({
         workspaceId: input.workspaceId,
         workspaceRoot,
         profileName: target.name,
@@ -176,12 +175,12 @@ export class LocalAgentManager {
         effort: target.effort,
       });
 
-      return manager.begin(record, input.prompt, {
+      return this.begin(record, input.prompt, {
         model: target.model,
         effort: target.effort,
         writeMode: input.writeMode,
       }, input.workspaceId);
-    });
+    }, this);
   }
 
   async continue(
@@ -190,21 +189,19 @@ export class LocalAgentManager {
     overrides: RunOverrides = {},
     scope: LocalAgentWorkspaceScope,
   ): Promise<BetterResult<LocalAgentRecord, AgentContinueError>> {
-    const manager = this;
-
-    return Result.gen(async function* () {
-      yield* manager.acceptingResult("continue", agentId);
-      const record = yield* manager.store.getByIdResult(agentId);
+    return Result.gen(async function* (this: LocalAgentManager) {
+      yield* this.acceptingResult("continue", agentId);
+      const record = yield* this.store.getByIdResult(agentId);
 
       if (!record) return Result.err(agentNotFound(agentId));
-      yield* manager.agentWorkspaceResult(record, scope, "continue");
-      const profiles = yield* Result.await(manager.loadProfilesResult(record.workspaceRoot, record.profileName));
-      yield* manager.profileForRecordResult(record, profiles);
-      yield* manager.providerEnabledResult(record.provider, record.profileName, "continue");
-      yield* manager.driverResult(record.provider, "continue", agentId);
+      yield* this.agentWorkspaceResult(record, scope, "continue");
+      const profiles = yield* Result.await(this.loadProfilesResult(record.workspaceRoot, record.profileName));
+      yield* this.profileForRecordResult(record, profiles);
+      yield* this.providerEnabledResult(record.provider, record.profileName, "continue");
+      yield* this.driverResult(record.provider, "continue", agentId);
 
-      return manager.begin(record, prompt, overrides, scope.workspaceId);
-    });
+      return this.begin(record, prompt, overrides, scope.workspaceId);
+    }, this);
   }
 
   get(
@@ -303,7 +300,7 @@ export class LocalAgentManager {
 
       for (const result of turnResults) {
         if (result.status === "rejected") {
-          this.log("warn", "local_agent_close_failed", { error: errorMessage(result.reason) });
+          this.log("warn", "local_agent_close_failed", { error: String(result.reason) });
         }
       }
 
@@ -494,7 +491,7 @@ export class LocalAgentManager {
         providerSessionIdPrefix: record.providerSessionId?.slice(0, 8),
         durationMs: Math.max(0, Date.now() - startedAt),
         error: "Unexpected internal subagent failure.",
-        errorType: error instanceof Error ? error.name : typeof error,
+        errorType: error instanceof Error ? error.name : "UnknownError",
         persistenceFailed: persisted.isErr(),
       });
       throw error;
@@ -523,7 +520,7 @@ export class LocalAgentManager {
       durationMs: Math.max(0, Date.now() - startedAt),
       errorCode: error.code,
       error: error.message,
-      causeType: safeCauseType("cause" in error ? error.cause : undefined),
+      causeType: safeCauseType(error.cause instanceof Error ? error.cause : undefined),
       persistenceFailed: persisted.isErr(),
     });
   }
@@ -724,7 +721,7 @@ export class LocalAgentManager {
   private log(
     level: "info" | "warn" | "error",
     event: string,
-    fields: Record<string, unknown>,
+    fields: Record<string, JSONType | undefined>,
   ): void {
     this.logger?.(level, event, fields);
   }
@@ -734,20 +731,8 @@ export function createLocalAgentManager(options: LocalAgentManagerOptions): Loca
   return new LocalAgentManager(options);
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function safeCauseType(cause: unknown): string | undefined {
-  if (cause instanceof Error) return cause.name;
-
-  if (cause && typeof cause === "object" && "error" in cause) {
-    const nested = (cause as { error?: unknown }).error;
-
-    if (nested instanceof Error) return nested.name;
-  }
-
-  return cause === undefined ? undefined : typeof cause;
+function safeCauseType(cause: Error | undefined): string | undefined {
+  return cause?.name;
 }
 
 function agentNotFound(agentId: string): AgentTargetError {
@@ -804,21 +789,19 @@ async function waitForTurns(
 function waitResultFromTurn(turn: LocalAgentTurnRecord, timedOut: boolean): LocalAgentWaitResult {
   switch (turn.status) {
     case "running":
-      return { id: turn.agentId, status: "running", ...(timedOut ? { wait: "timeout" } : {}) };
+      return timedOut
+        ? { id: turn.agentId, status: "running", wait: "timeout" }
+        : { id: turn.agentId, status: "running" };
     case "completed":
-      return {
-        id: turn.agentId,
-        status: "completed",
-        ...(turn.response === undefined ? {} : { response: turn.response }),
-      };
+      if (turn.response === undefined) return { id: turn.agentId, status: "completed" };
+
+      return { id: turn.agentId, status: "completed", response: turn.response };
     case "failed":
       return { id: turn.agentId, status: "failed", error: turnFailure(turn) };
     case "stopped":
-      return {
-        id: turn.agentId,
-        status: "stopped",
-        ...(hasTurnFailure(turn) ? { error: turnFailure(turn) } : {}),
-      };
+      if (!hasTurnFailure(turn)) return { id: turn.agentId, status: "stopped" };
+
+      return { id: turn.agentId, status: "stopped", error: turnFailure(turn) };
   }
 }
 
@@ -826,13 +809,13 @@ function waitResultFromAgent(agent: LocalAgentRecord, timedOut: boolean): LocalA
   switch (agent.status) {
     case "starting":
     case "running":
-      return { id: agent.id, status: "running", ...(timedOut ? { wait: "timeout" } : {}) };
+      return timedOut
+        ? { id: agent.id, status: "running", wait: "timeout" }
+        : { id: agent.id, status: "running" };
     case "idle":
-      return {
-        id: agent.id,
-        status: "completed",
-        ...(agent.latestResponse === undefined ? {} : { response: agent.latestResponse }),
-      };
+      if (agent.latestResponse === undefined) return { id: agent.id, status: "completed" };
+
+      return { id: agent.id, status: "completed", response: agent.latestResponse };
     case "error":
       return {
         id: agent.id,
@@ -844,16 +827,18 @@ function waitResultFromAgent(agent: LocalAgentRecord, timedOut: boolean): LocalA
         },
       };
     case "stopped":
+      if (!agent.error && !agent.errorCode && agent.errorRetryable === undefined) {
+        return { id: agent.id, status: "stopped" };
+      }
+
       return {
         id: agent.id,
         status: "stopped",
-        ...(agent.error || agent.errorCode || agent.errorRetryable !== undefined
-          ? { error: {
-              code: agent.errorCode ?? "AGENT_STOPPED",
-              message: agent.error ?? "Subagent stopped.",
-              retryable: agent.errorRetryable ?? false,
-            } }
-          : {}),
+        error: {
+          code: agent.errorCode ?? "AGENT_STOPPED",
+          message: agent.error ?? "Subagent stopped.",
+          retryable: agent.errorRetryable ?? false,
+        },
       };
   }
 }
@@ -862,7 +847,7 @@ function hasTurnFailure(turn: LocalAgentTurnRecord): boolean {
   return turn.error !== undefined || turn.errorCode !== undefined || turn.errorRetryable !== undefined;
 }
 
-function turnFailure(turn: LocalAgentTurnRecord): { code: string; message: string; retryable: boolean } {
+function turnFailure(turn: LocalAgentTurnRecord) {
   return {
     code: turn.errorCode ?? "AGENT_FAILED",
     message: turn.error ?? "Subagent failed without an error message.",
