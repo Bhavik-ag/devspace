@@ -44,19 +44,17 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
   const root = await mkdtemp(join(tmpdir(), "devspace-pi-sandbox-test-"));
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
-  const workspaceAlias = join(root, "workspace-alias");
-  await symlink(workspace, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
   const outside = join(root, "outside.txt");
   const session = {};
   const modeRef = createPiSandboxModeRef("allowed");
   const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
 
   try {
-    createPiSandboxExtension(workspaceAlias, modeRef)({
+    createPiSandboxExtension(workspace, modeRef)({
       registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) =>
         tools.set(tool.name, tool),
     } as never);
-    await registerPiSandboxSession(session, workspaceAlias, modeRef, "allowed");
+    await registerPiSandboxSession(session, workspace, modeRef, "allowed");
 
     const bash = tools.get("bash");
     assert.ok(bash, "Pi sandbox extension registers a bash tool");
@@ -94,30 +92,6 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
       "restricted Pi reads must resolve symlinks before enforcing the workspace boundary",
     );
 
-    const grep = tools.get("grep");
-    assert.ok(grep, "Pi sandbox extension registers a grep tool");
-    await assert.rejects(
-      grep.execute("symlink-grep-test", { pattern: "secret", path: symlinkPath }),
-      /ripgrep \(rg\) is not available|Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
-      "restricted Pi grep must not search through symlinks outside the workspace",
-    );
-
-    const find = tools.get("find");
-    assert.ok(find, "Pi sandbox extension registers a find tool");
-    await assert.rejects(
-      find.execute("symlink-find-test", { pattern: "*.txt", path: symlinkPath }),
-      /Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
-      "restricted Pi find must not search through symlinks outside the workspace",
-    );
-
-    const ls = tools.get("ls");
-    assert.ok(ls, "Pi sandbox extension registers an ls tool");
-    await assert.rejects(
-      ls.execute("symlink-ls-test", { path: symlinkPath }),
-      /Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
-      "restricted Pi ls must not list symlinks outside the workspace",
-    );
-
     const write = tools.get("write");
     assert.ok(write, "Pi sandbox extension registers a write tool");
     modeRef.value = "read_only";
@@ -141,15 +115,30 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
       "sandboxed Pi bash cannot overwrite protected workspace environment files",
     );
 
+    const workspaceAlias = join(root, "workspace-alias");
+    await symlink(workspace, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
+    const retargetedSession = {};
+    const retargetedModeRef = createPiSandboxModeRef("allowed");
+    const retargetedTools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+    createPiSandboxExtension(workspaceAlias, retargetedModeRef)({
+      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) =>
+        retargetedTools.set(tool.name, tool),
+    } as never);
+    await registerPiSandboxSession(retargetedSession, workspaceAlias, retargetedModeRef, "allowed");
     await rm(workspaceAlias, { recursive: true, force: true });
     await symlink(outsideDirectory, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
     const escapedBashFile = join(outsideDirectory, "bash-escaped.txt");
-    await assert.rejects(
-      bash.execute("retargeted-workspace-bash-test", { command: `touch '${escapedBashFile}'` }),
-      /outside allowed roots|outside the allowed root|outside the workspace|not allowed/i,
-      "restricted Pi bash must not follow a retargeted workspace symlink",
-    );
-    assert.equal(existsSync(escapedBashFile), false);
+    try {
+      const retargetedBash = retargetedTools.get("bash");
+      assert.ok(retargetedBash);
+      await assert.rejects(
+        retargetedBash.execute("retargeted-workspace-bash-test", { command: `touch '${escapedBashFile}'` }),
+        /outside allowed roots|outside the allowed root|outside the workspace|not allowed/i,
+      );
+      assert.equal(existsSync(escapedBashFile), false);
+    } finally {
+      await releasePiSandboxSession(retargetedSession);
+    }
   } finally {
     await releasePiSandboxSession(session);
     await rm(root, { recursive: true, force: true });

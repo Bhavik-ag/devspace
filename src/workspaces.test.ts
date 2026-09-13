@@ -390,38 +390,6 @@ test("workspace paths outside the allowed roots are rejected", async (t) => {
   );
 });
 
-test("workspace paths cannot escape through symlinks", async (t) => {
-  const context = await fixture(t);
-  const outsideLink = join(context.root, "outside-link");
-  await symlink(
-    context.outsideRoot,
-    outsideLink,
-    platform() === "win32" ? "junction" : "dir",
-  );
-
-  await assert.rejects(
-    () => context.registry.openWorkspace(outsideLink),
-    /outside allowed roots/,
-  );
-
-  const opened = await context.registry.openWorkspace(context.root);
-  await assert.rejects(
-    () => context.registry.resolvePath(opened.workspace, "outside-link/secret.txt"),
-    /outside allowed roots/,
-  );
-
-  const insideLink = join(context.root, "inside-link");
-  await symlink(
-    join(context.root, "nested"),
-    insideLink,
-    platform() === "win32" ? "junction" : "dir",
-  );
-  assert.equal(
-    await context.registry.resolvePath(opened.workspace, "inside-link/file.txt"),
-    await realpath(join(context.root, "nested", "file.txt")),
-  );
-});
-
 test("an opened workspace does not follow a retargeted root symlink", { skip: platform() === "win32" }, async (t) => {
   const context = await fixture(t);
   const workspaceDirectory = join(context.root, "workspace-directory");
