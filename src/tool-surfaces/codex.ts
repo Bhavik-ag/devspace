@@ -12,7 +12,6 @@ import {
   type ToolRegistrationContext,
 } from "./types.js";
 import {
-  contentText,
   resultOutputSchema,
   runLoggedToolOperation,
   textBlock,
@@ -49,7 +48,7 @@ function processResult(snapshot: ProcessSnapshot): string {
     : status;
 }
 
-function processOutputSchema(): z.ZodRawShape {
+function processOutputSchema(): Parameters<typeof z.object>[0] {
   return resultOutputSchema({
     session_id: z.number().optional(),
     running: z.boolean(),

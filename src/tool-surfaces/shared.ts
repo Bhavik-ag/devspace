@@ -9,7 +9,9 @@ import {
   type ToolWidgetDescriptorMeta,
 } from "./types.js";
 
-export function resultOutputSchema(extra: z.ZodRawShape = {}): z.ZodRawShape {
+type ToolOutputFields = Parameters<typeof z.object>[0];
+
+export function resultOutputSchema(extra: ToolOutputFields = {}) {
   return {
     result: z
       .string()
@@ -74,10 +76,7 @@ export async function runLoggedToolOperation<T>(
 
 export function contentText(content: ToolContent[]): string {
   return content
-    .filter(
-      (item): item is { type: "text"; text: string } => item.type === "text",
-    )
-    .map((item) => item.text)
+    .flatMap((item) => (item.type === "text" ? [item.text] : []))
     .join("\n");
 }
 

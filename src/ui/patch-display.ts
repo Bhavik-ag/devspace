@@ -16,6 +16,10 @@ export interface FileChangePathDisplay {
   title: string;
 }
 
+interface PatchDisplayParts {
+  title: string;
+}
+
 const fileChangeLabels: Record<Exclude<FileChangeKind, "unknown">, string> = {
   added: "Added",
   edited: "Edited",
@@ -27,7 +31,7 @@ const fileChangeLabels: Record<Exclude<FileChangeKind, "unknown">, string> = {
 export function getPatchDisplayParts(
   card: Pick<ToolResultCard, "files">,
   options: { emptyTitle?: string } = {},
-): { title: string } {
+): PatchDisplayParts {
   const files = card.files ?? [];
   const fileCount = countChangedFiles(files);
 
