@@ -60,8 +60,10 @@ export function migrateDatabase(sqlite: Database.Database): void {
     `);
 
     const appliedRows = sqlite
-      .prepare("select version, name from devspace_schema_migrations order by version")
-      .all() as Array<{ version: number; name: string }>;
+      .prepare<[], { version: number; name: string }>(
+        "select version, name from devspace_schema_migrations order by version",
+      )
+      .all();
 
     const migrationsByVersion = new Map(migrations.map((migration) => [migration.version, migration]));
 
@@ -241,9 +243,9 @@ function migrateLocalAgentStructuredErrors(sqlite: Database.Database): void {
 }
 
 function migrateLocalAgentEffortRename(sqlite: Database.Database): void {
-  const columns = sqlite.prepare("pragma table_info(local_agent_sessions)").all() as Array<{
-    name: string;
-  }>;
+  const columns = sqlite
+    .prepare<[], { name: string }>("pragma table_info(local_agent_sessions)")
+    .all();
 
   const names = new Set(columns.map((column) => column.name));
 
@@ -308,7 +310,9 @@ function addColumnIfMissing(
   column: string,
   definition: string,
 ): void {
-  const columns = sqlite.prepare(`pragma table_info(${table})`).all() as Array<{ name: string }>;
+  const columns = sqlite
+    .prepare<[], { name: string }>(`pragma table_info(${table})`)
+    .all();
 
   if (columns.some((existingColumn) => existingColumn.name === column)) return;
 
