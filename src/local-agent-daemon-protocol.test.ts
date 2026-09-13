@@ -126,7 +126,7 @@ assert.throws(
     method: "agent.start",
     params: { target: "reviewer", prompt: "" },
   }),
-  (error: unknown) => error instanceof LocalAgentDaemonProtocolError && error.code === "INVALID_PARAMS",
+  (error: Error) => error instanceof LocalAgentDaemonProtocolError && error.code === "INVALID_PARAMS",
 );
 
 const record = decodeAgentRecord({
