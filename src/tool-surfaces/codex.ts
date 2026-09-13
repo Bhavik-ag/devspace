@@ -156,21 +156,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .describe(
             "Allocate a pseudo-terminal for interactive commands. Defaults to false.",
           ),
-        columns: z
-          .number()
-          .int()
-          .min(1)
-          .max(1_000)
-          .optional()
-          .describe("Initial PTY width. Defaults to 80."),
-        rows: z
-          .number()
-          .int()
-          .min(1)
-          .max(1_000)
-          .optional()
-          .describe("Initial PTY height. Defaults to 24."),
-        working_directory: z
+        workdir: z
           .string()
           .optional()
           .describe(
@@ -200,15 +186,13 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       workspace_id,
       cmd,
       tty,
-      columns,
-      rows,
-      working_directory,
+      workdir,
       yield_time_ms,
       max_output_tokens,
     }) => {
       const startedAt = performance.now();
       const workspaceId = workspace_id;
-      const workingDirectory = working_directory;
+      const workingDirectory = workdir;
       const yieldTimeMs = yield_time_ms;
       const maxOutputTokens = max_output_tokens;
       const snapshot = await runLoggedToolOperation(
@@ -233,8 +217,6 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
             cwd,
             workspaceRoot: workspace.root,
             tty,
-            columns,
-            rows,
             yieldTimeMs,
             maxOutputTokens,
           });
@@ -264,20 +246,6 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
           .describe(
             "Characters to write. Omit or pass an empty string to poll.",
           ),
-        columns: z
-          .number()
-          .int()
-          .min(1)
-          .max(1_000)
-          .optional()
-          .describe("Resize a PTY to this width."),
-        rows: z
-          .number()
-          .int()
-          .min(1)
-          .max(1_000)
-          .optional()
-          .describe("Resize a PTY to this height."),
         yield_time_ms: z
           .number()
           .int()
@@ -302,8 +270,6 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
       workspace_id,
       session_id,
       chars,
-      columns,
-      rows,
       yield_time_ms,
       max_output_tokens,
     }) => {
@@ -322,8 +288,6 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
             workspaceId,
             sessionId,
             chars,
-            columns,
-            rows,
             yieldTimeMs,
             maxOutputTokens,
           });

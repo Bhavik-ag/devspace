@@ -84,6 +84,38 @@ test("Codex process tools bound model-facing yield windows to 12 seconds", async
   }
 });
 
+test("Codex process tools keep model-facing inputs minimal", async (t) => {
+  const context = await fixture(t, { toolMode: "codex", uiEnabled: false });
+  const tools = await context.client.listTools();
+  const execTool = tools.tools.find(({ name }) => name === "exec_command");
+  const stdinTool = tools.tools.find(({ name }) => name === "write_stdin");
+  const execProperties = execTool?.inputSchema?.properties ?? {};
+  const stdinProperties = stdinTool?.inputSchema?.properties ?? {};
+
+  assert.ok("workdir" in execProperties);
+  assert.equal("working_directory" in execProperties, false);
+  assert.equal("columns" in execProperties, false);
+  assert.equal("rows" in execProperties, false);
+  assert.equal("columns" in stdinProperties, false);
+  assert.equal("rows" in stdinProperties, false);
+
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "codex-workdir"),
+  ).workspace_id;
+  assert.equal(typeof workspaceId, "string");
+  await mkdir(join(context.project, "nested"));
+
+  const result = structuredContent(await context.client.callTool({
+    name: "exec_command",
+    arguments: {
+      workspace_id: workspaceId,
+      cmd: "pwd",
+      workdir: "nested",
+    },
+  }));
+  assert.match(result.result as string, /nested/i);
+});
+
 test("Claude edit and bash tools accept snake_case runtime inputs", async (t) => {
   const context = await fixture(t, { toolMode: "claude", uiEnabled: false });
   const workspaceId = structuredContent(
