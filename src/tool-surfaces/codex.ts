@@ -223,7 +223,7 @@ function registerCodexProcessTools(context: ToolRegistrationContext): void {
         startedAt,
         async () => {
           const workspace = await workspaces.getWorkspace(workspaceId);
-          const cwd = workspaces.resolveWorkingDirectory(
+          const cwd = await workspaces.resolveWorkingDirectory(
             workspace,
             workingDirectory,
           );

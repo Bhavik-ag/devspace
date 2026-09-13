@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -128,7 +128,7 @@ test("worktree opens require Git and create an isolated managed workspace", asyn
   assert.match(opened.agentsFiles.map((file) => file.content).join("\n"), /global instructions/);
   assert.match(opened.agentsFiles.map((file) => file.content).join("\n"), /git root instructions/);
 
-  const resolvedReadme = context.registry.resolvePath(opened.workspace, "README.md");
+  const resolvedReadme = await context.registry.resolvePath(opened.workspace, "README.md");
   assert.equal(resolvedReadme.startsWith(opened.workspace.root), true);
 });
 
@@ -297,6 +297,31 @@ test("invalid persisted roots are not refreshed before validation", async (t) =>
   assert.equal(store.touches, 0);
 });
 
+test("persisted symlink roots cannot restore outside allowed roots", async (t) => {
+  const context = await fixture(t);
+  const stateDir = await mkdtemp(join(tmpdir(), "devspace-symlink-root-state-test-"));
+  const store = new SqliteWorkspaceStore(stateDir);
+  t.after(async () => {
+    store.close();
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  const outsideLink = join(context.root, "outside-link");
+  await symlink(
+    context.outsideRoot,
+    outsideLink,
+    platform() === "win32" ? "junction" : "dir",
+  );
+  const session = store.createSession({
+    id: "ws_symlink_escape",
+    root: outsideLink,
+    mode: "checkout",
+  });
+
+  const registry = new WorkspaceRegistry(context.config, store);
+  await assert.rejects(() => registry.getWorkspace(session.id), /outside allowed roots/);
+});
+
 test("workspace cache evicts old contexts without losing advertised skill reads", async (t) => {
   const context = await fixture(t);
   const stateDir = join(context.root, ".bounded-state");
@@ -337,7 +362,7 @@ test("workspace cache evicts old contexts without losing advertised skill reads"
     const registry = new WorkspaceRegistry(config, store);
     const first = await registry.openWorkspace(context.root);
     assert.equal(
-      registry.resolveReadPath(first.workspace, resourceFile).absolutePath,
+      (await registry.resolveReadPath(first.workspace, resourceFile)).absolutePath,
       resourceFile,
     );
 
@@ -348,7 +373,7 @@ test("workspace cache evicts old contexts without losing advertised skill reads"
     const restored = await registry.getWorkspace(first.workspace.id);
     assert.notEqual(restored, first.workspace);
     assert.equal(
-      registry.resolveReadPath(restored, resourceFile).absolutePath,
+      (await registry.resolveReadPath(restored, resourceFile)).absolutePath,
       resourceFile,
     );
   } finally {
@@ -362,6 +387,55 @@ test("workspace paths outside the allowed roots are rejected", async (t) => {
   await assert.rejects(
     () => context.registry.openWorkspace(context.outsideRoot),
     /outside allowed roots/,
+  );
+});
+
+test("workspace paths cannot escape through symlinks", async (t) => {
+  const context = await fixture(t);
+  const outsideLink = join(context.root, "outside-link");
+  await symlink(
+    context.outsideRoot,
+    outsideLink,
+    platform() === "win32" ? "junction" : "dir",
+  );
+
+  await assert.rejects(
+    () => context.registry.openWorkspace(outsideLink),
+    /outside allowed roots/,
+  );
+
+  const opened = await context.registry.openWorkspace(context.root);
+  await assert.rejects(
+    () => context.registry.resolvePath(opened.workspace, "outside-link/secret.txt"),
+    /outside allowed roots/,
+  );
+
+  const insideLink = join(context.root, "inside-link");
+  await symlink(
+    join(context.root, "nested"),
+    insideLink,
+    platform() === "win32" ? "junction" : "dir",
+  );
+  assert.equal(
+    await context.registry.resolvePath(opened.workspace, "inside-link/file.txt"),
+    await realpath(join(context.root, "nested", "file.txt")),
+  );
+});
+
+test("an opened workspace does not follow a retargeted root symlink", { skip: platform() === "win32" }, async (t) => {
+  const context = await fixture(t);
+  const workspaceDirectory = join(context.root, "workspace-directory");
+  const workspaceLink = join(context.root, "workspace-link");
+  await mkdir(workspaceDirectory);
+  await symlink(workspaceDirectory, workspaceLink, "dir");
+
+  const opened = await context.registry.openWorkspace(workspaceLink);
+  await rm(workspaceLink);
+  await symlink(context.outsideRoot, workspaceLink, "dir");
+
+  await assert.rejects(
+    () => context.registry.getWorkspace(opened.workspace.id),
+    /root changed after it was opened/,
   );
 });
 
