@@ -1,9 +1,12 @@
 import { createRequire } from "node:module";
 import { createServer as createNetServer } from "node:net";
 import type {
+  AssistantMessage,
   OpencodeClient,
+  Part,
   PermissionConfig,
 } from "@opencode-ai/sdk/v2";
+import { z, type JSONType } from "zod";
 import {
   AgentProviderExecutionError,
   AgentProviderProtocolError,
@@ -30,12 +33,72 @@ const OPENCODE_PROMPT_TIMEOUT_MS = 5 * 60_000;
 
 const require = createRequire(import.meta.url);
 
-const spawn = require("cross-spawn") as typeof import("node:child_process").spawn;
+const spawn: typeof import("node:child_process").spawn = require("cross-spawn");
 
 interface OpencodeModelRef {
   providerID: string;
   modelID: string;
 }
+
+interface OpencodeAgentSettings {
+  mode: "primary";
+  permission: PermissionConfig;
+}
+
+interface OpencodeServerConfig {
+  agent: {
+    devspace_read_only: OpencodeAgentSettings;
+    devspace_allowed: OpencodeAgentSettings;
+    devspace_full_access: OpencodeAgentSettings;
+  };
+}
+
+interface OpencodePromptData {
+  info: AssistantMessage;
+  parts: Part[];
+}
+
+interface OpencodePromptRequest {
+  sessionID: string;
+  directory: string;
+  parts: Array<{ type: "text"; text: string }>;
+  agent: string;
+  model?: OpencodeModelRef;
+  variant?: string;
+}
+
+const opencodeAddressSchema = z.object({ port: z.number() });
+
+const transportErrorSchema = z.object({
+  code: z.string().optional(),
+  cause: z.object({ code: z.string().optional() }).optional(),
+});
+
+const providerWrapperSchema = z.object({
+  data: z.json().optional(),
+  result: z.json().optional(),
+});
+
+const providerMessageCollectionSchema = z.object({
+  messages: z.array(z.json()),
+});
+
+const providerMessageSchema = z.object({
+  role: z.string().optional(),
+  type: z.string().optional(),
+  info: z.object({
+    role: z.string().optional(),
+    structured: z.json().optional(),
+  }).optional(),
+  content: z.array(z.json()).optional(),
+  parts: z.array(z.json()).optional(),
+  structured: z.json().optional(),
+});
+
+const providerTextPartSchema = z.object({
+  type: z.literal("text"),
+  text: z.string(),
+});
 
 export type OpencodeClientLike = Pick<OpencodeClient, "global" | "session">;
 
@@ -84,7 +147,7 @@ export class OpencodeRuntime implements LocalAgentRuntime {
           await callbacks?.onSessionId?.(sessionId);
           const promptResult = await this.prompt(sessionId, input);
           assertOpenCodePromptSucceeded(promptResult);
-          const finalResponse = requireFinalResponse(extractOpenCodeFinalResponse(promptResult));
+          const finalResponse = requireFinalResponse(extractTypedOpenCodeFinalResponse(promptResult));
 
           return {
             provider: this.provider,
@@ -129,7 +192,7 @@ export class OpencodeRuntime implements LocalAgentRuntime {
     this.server.close();
   }
 
-  private async prompt(sessionId: string, input: LocalAgentRunInput): Promise<unknown> {
+  private async prompt(sessionId: string, input: LocalAgentRunInput): Promise<OpencodePromptData> {
     const controller = new AbortController();
     this.promptControllers.add(controller);
     let timedOut = false;
@@ -209,7 +272,7 @@ async function defaultOpencodeFactory(
 
 async function startOpencodeServer(
   env: NodeJS.ProcessEnv,
-  config: Record<string, unknown>,
+  config: OpencodeServerConfig,
 ): Promise<OpencodeServerLike & { url: string }> {
   for (let attempt = 1; attempt <= OPENCODE_SERVER_START_ATTEMPTS; attempt += 1) {
     const port = await allocateOpencodePort();
@@ -226,7 +289,7 @@ async function startOpencodeServer(
 
 async function launchOpencodeServer(
   env: NodeJS.ProcessEnv,
-  config: Record<string, unknown>,
+  config: OpencodeServerConfig,
   port: number,
 ): Promise<OpencodeServerLike & { url: string }> {
   const detached = process.platform !== "win32";
@@ -307,15 +370,16 @@ async function allocateOpencodePort(): Promise<number> {
     server.once("error", reject);
     server.listen({ host: OPENCODE_SERVER_HOSTNAME, port: 0, exclusive: true }, () => {
       const address = server.address();
+      const parsedAddress = opencodeAddressSchema.safeParse(address);
 
-      if (!address || typeof address === "string") {
+      if (!parsedAddress.success) {
         server.close();
         reject(new Error("Failed to allocate an OpenCode server port."));
 
         return;
       }
 
-      server.close((error) => error ? reject(error) : resolve(address.port));
+      server.close((error) => error ? reject(error) : resolve(parsedAddress.data.port));
     });
   });
 }
@@ -335,10 +399,7 @@ async function isOpencodePortInUse(port: number): Promise<boolean> {
   });
 }
 
-export function opencodeAgentConfig(writeMode: LocalAgentRunInput["writeMode"]): {
-  mode: "primary";
-  permission: PermissionConfig;
-} {
+export function opencodeAgentConfig(writeMode: LocalAgentRunInput["writeMode"]): OpencodeAgentSettings {
   return {
     mode: "primary",
     permission: opencodePermissionFor(writeMode),
@@ -389,9 +450,9 @@ async function assertOpencodeHealthy(client: OpencodeClientLike): Promise<void> 
   }
 }
 
-function isOpenCodeTransportFailure(error: unknown): boolean {
-  if (error instanceof OpencodeHealthError) return true;
-  const code = transportErrorCode(error);
+function isOpenCodeTransportFailure(cause: unknown): boolean {
+  if (cause instanceof OpencodeHealthError) return true;
+  const code = transportErrorCode(cause);
 
   return code === "ECONNREFUSED"
     || code === "ECONNRESET"
@@ -401,16 +462,12 @@ function isOpenCodeTransportFailure(error: unknown): boolean {
     || code === "ETIMEDOUT";
 }
 
-function transportErrorCode(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const code = (error as NodeJS.ErrnoException).code;
+function transportErrorCode(cause: unknown): string | undefined {
+  const parsed = transportErrorSchema.safeParse(cause);
 
-  if (typeof code === "string") return code;
-  const cause = (error as Error & { cause?: unknown }).cause;
+  if (!parsed.success) return undefined;
 
-  return cause && typeof cause === "object" && typeof (cause as NodeJS.ErrnoException).code === "string"
-    ? (cause as NodeJS.ErrnoException).code
-    : undefined;
+  return parsed.data.code ?? parsed.data.cause?.code;
 }
 
 class OpencodeHealthError extends Error {
@@ -425,17 +482,23 @@ async function promptOpencodeSession(
   sessionId: string,
   input: LocalAgentRunInput,
   signal: AbortSignal,
-): Promise<unknown> {
+): Promise<OpencodePromptData> {
   const model = input.model ? parseOpencodeModel(input.model) : undefined;
 
-  return client.session.prompt({
+  const request: OpencodePromptRequest = {
     sessionID: sessionId,
     directory: input.workspaceRoot,
     parts: [{ type: "text", text: input.prompt }],
     agent: opencodeAgentFor(input.writeMode),
-    ...(model ? { model } : {}),
-    ...(input.effort ? { variant: input.effort } : {}),
-  }, { throwOnError: true, signal });
+  };
+
+  if (model) request.model = model;
+
+  if (input.effort) request.variant = input.effort;
+
+  const result = await client.session.prompt(request, { throwOnError: true, signal });
+
+  return result.data;
 }
 
 function parseOpencodeModel(model: string): OpencodeModelRef {
@@ -446,10 +509,8 @@ function parseOpencodeModel(model: string): OpencodeModelRef {
     : { providerID: model.slice(0, separator), modelID: model.slice(separator + 1) };
 }
 
-function requireSessionId(session: unknown): string {
-  const id = asRecord(session)?.id;
-
-  if (typeof id !== "string" || !id) {
+function requireSessionId(session: { id: string } | undefined): string {
+  if (!session?.id) {
     throw new AgentProviderProtocolError({
       code: "PROVIDER_PROTOCOL_ERROR",
       provider: "opencode",
@@ -459,55 +520,77 @@ function requireSessionId(session: unknown): string {
     });
   }
 
-  return id;
+  return session.id;
 }
 
-function assertOpenCodePromptSucceeded(value: unknown): void {
-  const result = asRecord(unwrapProviderPayload(value));
-  const info = asRecord(result?.info);
-  const error = asRecord(info?.error);
+function assertOpenCodePromptSucceeded(value: OpencodePromptData): void {
+  const error = value.info.error;
 
   if (!error) return;
-  const data = asRecord(error.data);
-
-  const message = typeof data?.message === "string"
-    ? data.message
-    : typeof error.message === "string"
-      ? error.message
-      : typeof error.name === "string"
-        ? `OpenCode returned ${error.name}.`
-        : "OpenCode returned an assistant error.";
 
   throw new AgentProviderExecutionError({
     code: "PROVIDER_EXECUTION_ERROR",
     provider: "opencode",
     operation: "prompt",
-    retryable: data?.isRetryable === true,
+    retryable: error.name === "APIError" && error.data.isRetryable,
     cause: error,
-    message,
+    message: opencodeAssistantErrorMessage(error),
   });
 }
 
-export function extractOpenCodeFinalResponse(value: unknown): string {
+function opencodeAssistantErrorMessage(error: NonNullable<AssistantMessage["error"]>): string {
+  switch (error.name) {
+    case "ProviderAuthError":
+    case "UnknownError":
+    case "MessageAbortedError":
+    case "StructuredOutputError":
+    case "ContextOverflowError":
+    case "ContentFilterError":
+    case "APIError":
+      return error.data.message;
+    case "MessageOutputLengthError":
+      return "OpenCode returned MessageOutputLengthError.";
+  }
+}
+
+function extractTypedOpenCodeFinalResponse(value: OpencodePromptData): string {
+  const text = value.parts
+    .flatMap((part) => part.type === "text" ? [part.text] : [])
+    .join("")
+    .trim();
+
+  if (text) return text;
+  const structured = z.json().safeParse(value.info.structured);
+
+  return structured.success ? stringifyStructuredMessage(structured.data) : "";
+}
+
+export function extractOpenCodeFinalResponse(value: JSONType): string {
   const root = unwrapProviderPayload(value);
-  const messages = Array.isArray(root) ? root : readArray(root, "messages");
+  const collection = providerMessageCollectionSchema.safeParse(root);
+
+  const messages = Array.isArray(root)
+    ? root
+    : collection.success
+      ? collection.data.messages
+      : undefined;
 
   if (messages) return extractLastOpenCodeAssistantMessageText(messages);
 
   return extractOpenCodeAssistantMessageText(root);
 }
 
-function extractLastOpenCodeAssistantMessageText(messages: unknown[]): string {
+function extractLastOpenCodeAssistantMessageText(messages: JSONType[]): string {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = asRecord(messages[index]);
+    const parsed = providerMessageSchema.safeParse(messages[index]);
 
-    if (!message) continue;
-    const info = asRecord(message.info);
-    const role = typeof info?.role === "string" ? info.role : message.role;
-    const type = typeof message.type === "string" ? message.type : undefined;
+    if (!parsed.success) continue;
+    const message = parsed.data;
+    const role = message.info?.role ?? message.role;
+    const type = message.type;
 
     if (role !== "assistant" && type !== "assistant") continue;
-    const text = extractOpenCodeAssistantMessageText(message);
+    const text = extractOpenCodeAssistantMessageText(messages[index]);
 
     if (text) return text;
   }
@@ -515,56 +598,56 @@ function extractLastOpenCodeAssistantMessageText(messages: unknown[]): string {
   return "";
 }
 
-function extractOpenCodeAssistantMessageText(value: unknown): string {
-  const message = asRecord(value);
+function extractOpenCodeAssistantMessageText(value: JSONType): string {
+  const parsed = providerMessageSchema.safeParse(value);
 
-  if (!message) return "";
+  if (!parsed.success) return "";
+  const message = parsed.data;
 
-  for (const key of ["content", "parts"] as const) {
-    const parts = readArray(message, key);
+  for (const parts of [message.content, message.parts]) {
 
     if (!parts) continue;
 
     const text = parts
-      .map((part) => {
-        const record = asRecord(part);
+      .flatMap((part) => {
+        const parsedPart = providerTextPartSchema.safeParse(part);
 
-        return record?.type === "text" && typeof record.text === "string" ? record.text : "";
+        return parsedPart.success ? [parsedPart.data.text] : [];
       })
-      .filter(Boolean)
       .join("");
 
     if (text.trim()) return text.trim();
   }
 
-  const info = asRecord(message.info) ?? message;
+  const structured = message.info?.structured ?? message.structured;
 
-  return stringifyStructuredMessage(info.structured);
+  return stringifyStructuredMessage(structured);
 }
 
-function stringifyStructuredMessage(value: unknown): string {
+function stringifyStructuredMessage(value: JSONType | undefined): string {
   if (value === undefined || value === null) return "";
+  const text = z.string().safeParse(value);
 
-  if (typeof value === "string") return value.trim();
+  if (text.success) return text.data.trim();
 
-  return JSON.stringify(value);
+  return JSON.stringify(value) ?? "";
 }
 
-function unwrapProviderPayload(value: unknown): unknown {
+function unwrapProviderPayload(value: JSONType): JSONType {
   let current = value;
 
   for (let depth = 0; depth < 3; depth += 1) {
-    const record = asRecord(current);
+    const parsed = providerWrapperSchema.safeParse(current);
 
-    if (!record) return current;
+    if (!parsed.success) return current;
 
-    if (record.data !== undefined) {
-      current = record.data;
+    if (parsed.data.data !== undefined) {
+      current = parsed.data.data;
       continue;
     }
 
-    if (record.result !== undefined) {
-      current = record.result;
+    if (parsed.data.result !== undefined) {
+      current = parsed.data.result;
       continue;
     }
 
@@ -572,26 +655,6 @@ function unwrapProviderPayload(value: unknown): unknown {
   }
 
   return current;
-}
-
-function readArray(value: unknown, key: string): unknown[] | undefined {
-  const result = asRecord(value)?.[key];
-
-  return Array.isArray(result) ? result : undefined;
-}
-
-function readNestedString(value: unknown, path: string[]): string | undefined {
-  let current: unknown = value;
-
-  for (const key of path) current = asRecord(current)?.[key];
-
-  return typeof current === "string" ? current : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
 }
 
 function requireFinalResponse(response: string): string {
@@ -610,6 +673,6 @@ function requireFinalResponse(response: string): string {
   return trimmed;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

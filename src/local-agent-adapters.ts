@@ -4,6 +4,7 @@ import {
   type SubagentsConfig,
 } from "./local-agent-config.js";
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
+import type { JSONType } from "zod";
 import {
   AcpLocalAgentDriver,
   resolveAcpCommand,
@@ -63,7 +64,7 @@ export function createLocalAgentDrivers(
   ];
 }
 
-export function extractLocalAgentResponseText(value: unknown): string {
+export function extractLocalAgentResponseText(value: JSONType): string {
   return extractOpenCodeFinalResponse(value) || extractPiFinalResponse(value);
 }
 
