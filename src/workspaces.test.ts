@@ -129,7 +129,7 @@ test("worktree opens require Git and create an isolated managed workspace", asyn
   assert.match(opened.agentsFiles.map((file) => file.content).join("\n"), /git root instructions/);
 
   const resolvedReadme = await context.registry.resolvePath(opened.workspace, "README.md");
-  assert.equal(resolvedReadme.startsWith(opened.workspace.root), true);
+  assert.equal(resolvedReadme, await realpath(join(opened.workspace.root, "README.md")));
 });
 
 test("persisted checkout and worktree sessions restore after recreating the registry", async (t) => {
@@ -363,7 +363,7 @@ test("workspace cache evicts old contexts without losing advertised skill reads"
     const first = await registry.openWorkspace(context.root);
     assert.equal(
       (await registry.resolveReadPath(first.workspace, resourceFile)).absolutePath,
-      resourceFile,
+      await realpath(resourceFile),
     );
 
     for (let index = 0; index < 32; index += 1) {
@@ -374,7 +374,7 @@ test("workspace cache evicts old contexts without losing advertised skill reads"
     assert.notEqual(restored, first.workspace);
     assert.equal(
       (await registry.resolveReadPath(restored, resourceFile)).absolutePath,
-      resourceFile,
+      await realpath(resourceFile),
     );
   } finally {
     store.close();
