@@ -92,6 +92,30 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
       "restricted Pi reads must resolve symlinks before enforcing the workspace boundary",
     );
 
+    const grep = tools.get("grep");
+    assert.ok(grep, "Pi sandbox extension registers a grep tool");
+    await assert.rejects(
+      grep.execute("symlink-grep-test", { pattern: "secret", path: symlinkPath }),
+      /Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
+      "restricted Pi grep must not search through symlinks outside the workspace",
+    );
+
+    const find = tools.get("find");
+    assert.ok(find, "Pi sandbox extension registers a find tool");
+    await assert.rejects(
+      find.execute("symlink-find-test", { pattern: "*.txt", path: symlinkPath }),
+      /Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
+      "restricted Pi find must not search through symlinks outside the workspace",
+    );
+
+    const ls = tools.get("ls");
+    assert.ok(ls, "Pi sandbox extension registers an ls tool");
+    await assert.rejects(
+      ls.execute("symlink-ls-test", { path: symlinkPath }),
+      /Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
+      "restricted Pi ls must not list symlinks outside the workspace",
+    );
+
     const write = tools.get("write");
     assert.ok(write, "Pi sandbox extension registers a write tool");
     modeRef.value = "read_only";
