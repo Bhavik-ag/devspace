@@ -156,6 +156,31 @@ test("Codex process results expose only actionable process state", async (t) => 
   assert.match(content?.find((block) => block.type === "text")?.text ?? "", /Output:\nhello/);
 });
 
+test("apply_patch returns only a concise acknowledgement", async (t) => {
+  const context = await fixture(t, { toolMode: "codex", uiEnabled: false });
+  const tools = await context.client.listTools();
+  const tool = tools.tools.find(({ name }) => name === "apply_patch");
+  const outputProperties = tool?.outputSchema?.properties ?? {};
+
+  assert.deepEqual(Object.keys(outputProperties).sort(), ["result"]);
+
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "codex-patch"),
+  ).workspace_id;
+  assert.equal(typeof workspaceId, "string");
+
+  const response = structuredContent(await context.client.callTool({
+    name: "apply_patch",
+    arguments: {
+      workspace_id: workspaceId,
+      patch: "*** Begin Patch\n*** Add File: note.txt\n+hello\n*** End Patch",
+    },
+  }));
+  assert.deepEqual(Object.keys(response), ["result"]);
+  assert.match(response.result as string, /A note\.txt/);
+  assert.equal(await readFile(join(context.project, "note.txt"), "utf8"), "hello\n");
+});
+
 test("Claude edit and bash tools accept snake_case runtime inputs", async (t) => {
   const context = await fixture(t, { toolMode: "claude", uiEnabled: false });
   const workspaceId = structuredContent(
@@ -175,6 +200,8 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
     },
   });
   assert.equal(edited.isError, undefined);
+  assert.deepEqual(Object.keys(structuredContent(edited)), ["result"]);
+  assert.equal(structuredContent(edited).result, "Edited note.txt.");
   assert.equal(await readFile(join(context.project, "note.txt"), "utf8"), "after\n");
 
   const shell = structuredContent(await context.client.callTool({

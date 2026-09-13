@@ -108,17 +108,7 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
             "Patch text enclosed by *** Begin Patch and *** End Patch markers.",
           ),
       },
-      outputSchema: resultOutputSchema({
-        additions: z.number(),
-        removals: z.number(),
-        files: z.array(
-          z.object({
-            path: z.string(),
-            previous_path: z.string().optional(),
-            operation: z.enum(["add", "update", "delete", "move"]),
-          }),
-        ),
-      }),
+      outputSchema: resultOutputSchema(),
       annotations: EDIT_TOOL_ANNOTATIONS,
     },
     async ({ workspace_id, patch }) => {
@@ -133,20 +123,24 @@ function registerApplyPatchTool(context: ToolRegistrationContext): void {
           return applyPatch(workspace.root, patch);
         },
       );
-      const paths = applied.files.map((file) => file.path).join(", ");
-      const result = `Applied patch to ${applied.files.length} file(s): ${paths}`;
+      const changes = applied.files.map((file) => {
+        if (file.operation === "move") {
+          return `R ${file.previousPath ?? "?"} -> ${file.path}`;
+        }
+        const prefix = file.operation === "add"
+          ? "A"
+          : file.operation === "delete"
+            ? "D"
+            : "M";
+        return `${prefix} ${file.path}`;
+      }).join("\n");
+      const result = `Success. Updated the following files:\n${changes}`;
       const content = [textBlock(result)];
 
       return {
         content,
         structuredContent: {
           result,
-          additions: applied.additions,
-          removals: applied.removals,
-          files: applied.files.map(({ previousPath, ...file }) => ({
-            ...file,
-            previous_path: previousPath,
-          })),
         },
       };
     },
