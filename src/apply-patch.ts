@@ -236,9 +236,9 @@ async function resolveConfinedPath(root: string, input: string): Promise<string>
 
       break;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
+      if (!isNodeError(error)) throw error;
 
-      if (code !== "ENOENT") throw error;
+      if (error.code !== "ENOENT") throw error;
       const parent = dirname(existing);
 
       if (parent === existing) throw error;
@@ -249,7 +249,7 @@ async function resolveConfinedPath(root: string, input: string): Promise<string>
   return target;
 }
 
-function splitFile(content: string): { lines: string[]; eol: string; finalNewline: boolean } {
+function splitFile(content: string) {
   const eol = content.includes("\r\n") ? "\r\n" : "\n";
   const normalized = content.replace(/\r\n/g, "\n");
   const finalNewline = normalized.endsWith("\n");
@@ -376,11 +376,15 @@ export async function isSamePatchFile(
 
     return sourceIdentity.dev === destinationIdentity.dev && sourceIdentity.ino === destinationIdentity.ino;
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
+    if (!isNodeError(error)) throw error;
 
-    if (code === "ENOENT" || code === "ENOTDIR") return false;
+    if (error.code === "ENOENT" || error.code === "ENOTDIR") return false;
     throw error;
   }
+}
+
+function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
+  return cause instanceof Error && "code" in cause;
 }
 
 export async function applyPatch(root: string, patch: string): Promise<ApplyPatchResult> {
@@ -534,7 +538,7 @@ function stripFinalNewline(value: string): string {
   return value;
 }
 
-function countPatchStats(patch: string): { additions: number; removals: number } {
+function countPatchStats(patch: string) {
   let additions = 0;
   let removals = 0;
 

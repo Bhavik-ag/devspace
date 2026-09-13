@@ -53,6 +53,36 @@ const openAIFileReferenceInputSchema = z.strictObject({
   size: z.number().int().nonnegative().nullable().optional(),
 });
 
+const incomingFileDownloadSchema = z.object({
+  download_url: z.string(),
+});
+
+const incomingStreamChunkSchema = z.union([
+  z.string(),
+  z.instanceof(Uint8Array),
+]);
+
+type ArtifactInputValue =
+  | null
+  | undefined
+  | boolean
+  | number
+  | bigint
+  | string
+  | symbol
+  | (() => void)
+  | Buffer
+  | readonly ArtifactInputValue[]
+  | { readonly [key: string]: ArtifactInputValue };
+
+type IncomingStreamChunk = z.infer<typeof incomingStreamChunkSchema>;
+
+interface ArtifactToolInput {
+  file?: ArtifactInputValue;
+  workspace_id?: string | null;
+  path?: string | null;
+}
+
 export interface ArtifactToolRegistrationOptions {
   config: ServerConfig;
   workspaces: WorkspaceRegistry;
@@ -60,7 +90,7 @@ export interface ArtifactToolRegistrationOptions {
 }
 
 export interface DownloadIncomingArtifactInput {
-  file: unknown;
+  file: ArtifactInputValue;
   workspaceId: string;
   path: string;
 }
@@ -163,7 +193,7 @@ export async function downloadIncomingArtifact({
   workspaceId: string;
   workspaceRoot: string;
   maxFileBytes: number;
-  file: unknown;
+  file: ArtifactInputValue;
   path: string;
   publishLink?: typeof link;
 }): Promise<DownloadIncomingArtifactResult> {
@@ -228,6 +258,13 @@ export async function downloadIncomingArtifact({
     let size = 0;
 
     for await (const value of opened.stream) {
+      if (!isIncomingStreamChunk(value)) {
+        throw new ArtifactError(
+          "invalid_incoming_artifact_chunk",
+          "Incoming artifact stream yielded a value that is not bytes or text.",
+        );
+      }
+
       const chunk = incomingStreamChunk(value);
 
       if (size + chunk.length > maxFileBytes) {
@@ -303,20 +340,28 @@ export async function downloadIncomingArtifact({
 }
 
 export function artifactToolLogFields(
-  input: Record<string, unknown>,
-): Record<string, unknown> {
+  input: ArtifactToolInput,
+): ArtifactToolLogFields {
   return {
     fileProvided: input.file !== undefined,
-    fileReferenceShape: describeIncomingArtifactValue(input.file),
+    fileReference: describeIncomingArtifactValue(input.file),
     downloadUrlHostname: incomingFileDownloadHostname(input.file),
-    workspaceId: input.workspace_id,
-    path: input.path,
+    workspaceId: input.workspace_id == null ? undefined : String(input.workspace_id),
+    path: input.path == null ? undefined : String(input.path),
   };
+}
+
+interface ArtifactToolLogFields {
+  fileProvided: boolean;
+  fileReference: ReturnType<typeof describeIncomingArtifactValue>;
+  downloadUrlHostname?: string;
+  workspaceId?: string;
+  path?: string;
 }
 
 async function executeArtifactTool(
   config: ServerConfig,
-  input: Record<string, unknown>,
+  input: ArtifactToolInput,
   operation: () => Promise<{
     publicResult: { path: string };
     logResult: DownloadIncomingArtifactResult;
@@ -611,17 +656,13 @@ async function writeAll(
   }
 }
 
-function incomingFileDownloadHostname(value: unknown): string | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return undefined;
-  }
+function incomingFileDownloadHostname(value: ArtifactInputValue): string | undefined {
+  const parsed = incomingFileDownloadSchema.safeParse(value);
 
-  const rawUrl = (value as Record<string, unknown>).download_url;
-
-  if (typeof rawUrl !== "string") return undefined;
+  if (!parsed.success) return undefined;
 
   try {
-    const hostname = new URL(rawUrl).hostname.toLowerCase();
+    const hostname = new URL(parsed.data.download_url).hostname.toLowerCase();
 
     return hostname.length > 0 && hostname.length <= 253 ? hostname : undefined;
   } catch {
@@ -629,19 +670,18 @@ function incomingFileDownloadHostname(value: unknown): string | undefined {
   }
 }
 
-function incomingStreamChunk(value: unknown): Buffer {
-  if (Buffer.isBuffer(value)) return value;
+function isIncomingStreamChunk(value: unknown): value is IncomingStreamChunk {
+  return incomingStreamChunkSchema.safeParse(value).success;
+}
 
-  if (typeof value === "string") return Buffer.from(value);
+function incomingStreamChunk(value: IncomingStreamChunk): Buffer {
+  if (Buffer.isBuffer(value)) return value;
 
   if (value instanceof Uint8Array) {
     return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
   }
 
-  throw new ArtifactError(
-    "invalid_incoming_artifact_chunk",
-    "Incoming artifact stream yielded a value that is not bytes or text.",
-  );
+  return Buffer.from(value);
 }
 
 async function lstatOrUndefined(path: string) {

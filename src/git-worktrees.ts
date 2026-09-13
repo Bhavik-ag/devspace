@@ -433,12 +433,12 @@ async function captureManagedWorktreeResult<T>(
   }
 }
 
-function isProgrammerDefect(error: unknown): boolean {
-  return error instanceof TypeError
-    || error instanceof ReferenceError
-    || error instanceof SyntaxError
-    || error instanceof RangeError
-    || (error instanceof Error && error.name === "AssertionError");
+function isProgrammerDefect(cause: unknown): boolean {
+  return cause instanceof TypeError
+    || cause instanceof ReferenceError
+    || cause instanceof SyntaxError
+    || cause instanceof RangeError
+    || (cause instanceof Error && cause.name === "AssertionError");
 }
 
 export function managedWorktreeRecoveryRef(workspaceId: string): string {
@@ -526,7 +526,7 @@ async function assertGitRootAllowed(gitRoot: string, allowedRoots: string[]): Pr
 async function resolveBaseCommit(sourceRoot: string, baseRef: string): Promise<string> {
   try {
     return (await git(["rev-parse", "--verify", `${baseRef}^{commit}`], sourceRoot)).trim();
-  } catch (error) {
+  } catch {
     if (baseRef === "HEAD") {
       throw new GitWorktreeError(
         "GIT_REPOSITORY_HAS_NO_COMMITS",
@@ -559,7 +559,7 @@ async function isDirectory(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isDirectory();
   } catch (error) {
-    if (typeof error === "object" && error && "code" in error && error.code === "ENOENT") {
+    if (isNodeError(error) && error.code === "ENOENT") {
       return false;
     }
 
@@ -578,12 +578,12 @@ async function git(args: string[], cwd: string): Promise<string> {
   } catch (error) {
     if (isGitUnavailable(error)) throw error;
 
-    const stderr = typeof error === "object" && error && "stderr" in error
-      ? String((error as { stderr?: unknown }).stderr ?? "").trim()
+    const stderr = error instanceof Error && "stderr" in error
+      ? String(error.stderr ?? "").trim()
       : "";
 
-    const stdout = typeof error === "object" && error && "stdout" in error
-      ? String((error as { stdout?: unknown }).stdout ?? "").trim()
+    const stdout = error instanceof Error && "stdout" in error
+      ? String(error.stdout ?? "").trim()
       : "";
 
     const details = stderr || stdout || (error instanceof Error ? error.message : String(error));
@@ -591,11 +591,10 @@ async function git(args: string[], cwd: string): Promise<string> {
   }
 }
 
-function isGitUnavailable(error: unknown): boolean {
-  return Boolean(
-    typeof error === "object" &&
-      error &&
-      "code" in error &&
-      (error as { code?: unknown }).code === "ENOENT",
-  );
+function isGitUnavailable(cause: unknown): boolean {
+  return isNodeError(cause) && cause.code === "ENOENT";
+}
+
+function isNodeError(cause: unknown): cause is NodeJS.ErrnoException {
+  return cause instanceof Error && "code" in cause;
 }
