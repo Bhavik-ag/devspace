@@ -29,6 +29,35 @@ test("workspace cards can be rebuilt from structured content without result meta
   assert.equal(decoded.card.summary?.agentsFiles, 1);
 });
 
+test("legacy camelCase structured results remain decodable", () => {
+  const workspace = decodeToolResult({
+    content: [],
+    structuredContent: {
+      workspaceId: "legacy_ws",
+      root: "/tmp/project",
+      mode: "checkout",
+      agentsFiles: [{ path: "AGENTS.md", content: "instructions" }],
+    },
+  });
+
+  assert.equal(workspace.kind, "card");
+
+  const review = decodeToolResult({
+    content: [],
+    structuredContent: {
+      workspaceId: "legacy_ws",
+      reviewRef: "a".repeat(40),
+      result: "Changed 1 file (+1 -0).",
+    },
+  });
+
+  assert.deepEqual(review, {
+    kind: "review-reference",
+    workspaceId: "legacy_ws",
+    reviewRef: "a".repeat(40),
+  });
+});
+
 test("review results use rich metadata when the host provides it", () => {
   const decoded = decodeToolResult({
     content: [],
