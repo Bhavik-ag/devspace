@@ -44,17 +44,19 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
   const root = await mkdtemp(join(tmpdir(), "devspace-pi-sandbox-test-"));
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
+  const workspaceAlias = join(root, "workspace-alias");
+  await symlink(workspace, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
   const outside = join(root, "outside.txt");
   const session = {};
   const modeRef = createPiSandboxModeRef("allowed");
   const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
 
   try {
-    createPiSandboxExtension(workspace, modeRef)({
+    createPiSandboxExtension(workspaceAlias, modeRef)({
       registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) =>
         tools.set(tool.name, tool),
     } as never);
-    await registerPiSandboxSession(session, workspace, modeRef, "allowed");
+    await registerPiSandboxSession(session, workspaceAlias, modeRef, "allowed");
 
     const bash = tools.get("bash");
     assert.ok(bash, "Pi sandbox extension registers a bash tool");
@@ -138,6 +140,16 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
       /Read-only file system|Command exited with code/,
       "sandboxed Pi bash cannot overwrite protected workspace environment files",
     );
+
+    await rm(workspaceAlias, { recursive: true, force: true });
+    await symlink(outsideDirectory, workspaceAlias, process.platform === "win32" ? "junction" : "dir");
+    const escapedBashFile = join(outsideDirectory, "bash-escaped.txt");
+    await assert.rejects(
+      bash.execute("retargeted-workspace-bash-test", { command: `touch '${escapedBashFile}'` }),
+      /outside allowed roots|outside the allowed root|outside the workspace|not allowed/i,
+      "restricted Pi bash must not follow a retargeted workspace symlink",
+    );
+    assert.equal(existsSync(escapedBashFile), false);
   } finally {
     await releasePiSandboxSession(session);
     await rm(root, { recursive: true, force: true });
