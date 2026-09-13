@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
 import { Result, type Result as BetterResult } from "better-result";
+import { z } from "zod";
 import {
   cleanupManagedWorktrees,
   ManagedWorktreeError,
@@ -20,6 +21,8 @@ import {
 } from "./workspace-store.js";
 
 const execFileAsync = promisify(execFile);
+
+const missingPathErrorSchema = z.object({ code: z.literal("ENOENT") });
 
 test("stale clean worktrees at their base are removed without recovery refs", async (t) => {
   const fixture = await worktreeFixture(t, "ws_clean");
@@ -367,7 +370,7 @@ async function pathExists(path: string): Promise<boolean> {
 
     return true;
   } catch (error) {
-    if (typeof error === "object" && error && "code" in error && error.code === "ENOENT") {
+    if (missingPathErrorSchema.safeParse(error).success) {
       return false;
     }
 

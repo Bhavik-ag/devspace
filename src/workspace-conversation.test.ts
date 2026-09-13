@@ -5,6 +5,7 @@ import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import { promisify } from "node:util";
+import { z } from "zod";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { openDatabase } from "./db/client.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
@@ -12,6 +13,8 @@ import { WorkspaceRegistry } from "./workspaces.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 
 const execFileAsync = promisify(execFile);
+
+const loopErrorSchema = z.object({ code: z.literal("ELOOP") });
 
 test("a conversation reuses its checkout context", async (t) => {
   const { project, registry } = await fixture(t);
@@ -178,7 +181,7 @@ test("a failed first context load does not consume bootstrap", async (t) => {
     await restoreAgentsDirectory(agentsDir, backupDir);
   }
 
-  const successfulOpen = await registry.openWorkspace(project, { conversationScopeId: "chat-1" });
+  await registry.openWorkspace(project, { conversationScopeId: "chat-1" });
 });
 
 test("a context-loading failure preserves a valid checkout binding", async (t) => {
@@ -396,11 +399,7 @@ test("unexpected filesystem errors are propagated without replacing the binding"
   const restoredRegistry = new WorkspaceRegistry(context.config, restoredStore);
   await assert.rejects(
     () => restoredRegistry.openWorkspace(context.project, { conversationScopeId: "chat-1" }),
-    (error: unknown) =>
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "ELOOP",
+    (cause: unknown) => loopErrorSchema.safeParse(cause).success,
   );
 
   const binding = restoredStore.getConversationBinding("chat-1", targetKey);

@@ -7,6 +7,7 @@ import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/sdk/
 import { databasePath, openDatabase } from "./db/client.js";
 import { SingleUserOAuthProvider } from "./oauth-provider.js";
 import { SqliteOAuthClientsStore, SqliteOAuthStore } from "./oauth-store.js";
+import { z } from "zod";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-oauth-test-"));
 
@@ -24,6 +25,8 @@ const mcpUrl = new URL("https://agent.example.com/mcp");
 const tunnelUrl = new URL(oauthConfig.allowedResourceUrls[0]!);
 
 const redirectUri = "https://chatgpt.com/connector_platform_oauth_redirect";
+
+const tokenHashListSchema = z.array(z.string());
 
 try {
   await testDatabaseConfiguration(join(root, "database-configuration"));
@@ -101,15 +104,19 @@ function testPersistenceAndTokenHashing(stateDir: string): void {
   const database = openDatabase(stateDir);
 
   try {
-    const accessHashes = database.sqlite
-      .prepare("select token_hash from oauth_access_tokens")
-      .pluck()
-      .all() as string[];
+    const accessHashes = tokenHashListSchema.parse(
+      database.sqlite
+        .prepare("select token_hash from oauth_access_tokens")
+        .pluck()
+        .all(),
+    );
 
-    const refreshHashes = database.sqlite
-      .prepare("select token_hash from oauth_refresh_tokens")
-      .pluck()
-      .all() as string[];
+    const refreshHashes = tokenHashListSchema.parse(
+      database.sqlite
+        .prepare("select token_hash from oauth_refresh_tokens")
+        .pluck()
+        .all(),
+    );
 
     assert.deepEqual(accessHashes, [hashToken(accessToken)]);
     assert.deepEqual(refreshHashes, [hashToken(refreshToken)]);

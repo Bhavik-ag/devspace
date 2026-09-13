@@ -7,12 +7,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { z } from "zod";
 import { loadConfig } from "./config.js";
 import {
   LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
   localAgentDaemonPaths,
 } from "./local-agent-daemon-lifecycle.js";
-import { encodeLocalAgentDaemonResponse } from "./local-agent-daemon-protocol.js";
+import {
+  decodeLocalAgentDaemonRequest,
+  encodeLocalAgentDaemonResponse,
+  type LocalAgentDaemonRequest,
+} from "./local-agent-daemon-protocol.js";
 import { LocalAgentStore } from "./local-agent-store.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 
@@ -24,9 +29,26 @@ const tsxLoader = pathToFileURL(require.resolve("tsx")).href;
 
 const cliPath = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
-const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
-  version: string;
-};
+const packageJson = z.object({ version: z.string() }).parse(
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")),
+);
+
+const execFileFailureSchema = z.object({ stdout: z.string(), stderr: z.string() });
+
+const agentErrorPayloadSchema = z.object({
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    retryable: z.boolean(),
+    target: z.string(),
+  }),
+});
+
+type ExecFileFailure = z.infer<typeof execFileFailureSchema>;
+
+function parseExecFileFailure(cause: unknown): ExecFileFailure {
+  return execFileFailureSchema.parse(cause);
+}
 
 for (const flag of ["-v", "--version"]) {
   const output = execFileSync("node", ["--import", "tsx", "src/cli.ts", flag], {
@@ -95,7 +117,7 @@ try {
   store.close();
 
   const daemonSocket = localAgentDaemonPaths(stateDir).endpoint;
-  const daemonRequests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+  const daemonRequests: LocalAgentDaemonRequest[] = [];
 
   const daemon = createNetServer((socket) => {
     let buffer = "";
@@ -106,11 +128,7 @@ try {
 
       if (newline === -1) return;
 
-      const request = JSON.parse(buffer.slice(0, newline)) as {
-        requestId: string;
-        method: string;
-        params?: Record<string, unknown>;
-      };
+      const request = decodeLocalAgentDaemonRequest(JSON.parse(buffer.slice(0, newline)));
 
       daemonRequests.push(request);
 
@@ -290,7 +308,7 @@ try {
       timeoutMs: 0,
     });
 
-    let commandFailure: unknown;
+    let commandFailure: ExecFileFailure | undefined;
 
     try {
       await execFileAsync(
@@ -307,22 +325,20 @@ try {
           },
         },
       );
-    } catch (error) {
-      commandFailure = error;
+    } catch (cause) {
+      commandFailure = parseExecFileFailure(cause);
     }
 
     assert.ok(commandFailure, "structured CLI errors should exit non-zero");
-    const stdout = (commandFailure as { stdout?: string }).stdout ?? "";
+    const stdout = commandFailure.stdout;
 
-    const payload = JSON.parse(stdout) as {
-      error: { code: string; message: string; retryable: boolean; target: string };
-    };
+    const payload = agentErrorPayloadSchema.parse(JSON.parse(stdout));
 
     assert.equal(payload.error.code, "UNKNOWN_TARGET");
     assert.equal(payload.error.retryable, false);
     assert.equal(payload.error.target, "missing");
 
-    let xmlCommandFailure: unknown;
+    let xmlCommandFailure: ExecFileFailure | undefined;
 
     try {
       await execFileAsync(
@@ -339,13 +355,13 @@ try {
           },
         },
       );
-    } catch (error) {
-      xmlCommandFailure = error;
+    } catch (cause) {
+      xmlCommandFailure = parseExecFileFailure(cause);
     }
 
     assert.ok(xmlCommandFailure, "XML CLI errors should exit non-zero");
     assert.equal(
-      (xmlCommandFailure as { stderr?: string }).stderr,
+      xmlCommandFailure.stderr,
       '<error code="UNKNOWN_TARGET" retryable="false">Unknown subagent profile or provider: missing.</error>\n',
     );
 
@@ -374,9 +390,9 @@ try {
           },
         },
       ),
-      (error: unknown) => {
+      (cause: unknown) => {
         assert.equal(
-          (error as { stderr?: string }).stderr,
+          parseExecFileFailure(cause).stderr,
           '<error code="AGENT_COMMAND_ERROR" retryable="false">Unknown option: --unknown. Use -- before prompt text that starts with a dash.</error>\n',
         );
 

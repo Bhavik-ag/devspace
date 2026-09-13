@@ -110,8 +110,8 @@ test("worktree opens require Git and create an isolated managed workspace", asyn
 
   await assert.rejects(
     () => context.registry.openWorkspace({ path: context.root, mode: "worktree" }),
-    (error: unknown) =>
-      error instanceof GitWorktreeError && error.code === "GIT_REPOSITORY_NOT_FOUND",
+    (cause: unknown) =>
+      cause instanceof GitWorktreeError && cause.code === "GIT_REPOSITORY_NOT_FOUND",
   );
 
   const gitRoot = await createGitProject(context.root);

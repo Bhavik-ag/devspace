@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { z } from "zod";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 
@@ -19,9 +20,20 @@ const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url
 
 const repoRoot = dirname(packageJsonPath);
 
-const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
-  bin: { devspace: string };
-};
+const packageJson = z.object({
+  bin: z.object({ devspace: z.string() }),
+}).parse(JSON.parse(readFileSync(packageJsonPath, "utf8")));
+
+const execFileFailureSchema = z.object({ stderr: z.string() });
+
+const showChangesOutputSchema = z.object({
+  reviewRef: z.string(),
+  patch: z.string(),
+});
+
+function parseExecFileFailure(cause: unknown): { stderr: string } {
+  return execFileFailureSchema.parse(cause);
+}
 
 // This verifies the compiled entrypoint declared for the installed `devspace`
 // command. npm's package-install shim itself is outside this focused test.
@@ -82,10 +94,7 @@ test("show-changes prints a Git-backed historical review", async (t) => {
     encoding: "utf8",
   });
 
-  const parsed = JSON.parse(json.stdout) as {
-    reviewRef: string;
-    patch: string;
-  };
+  const parsed = showChangesOutputSchema.parse(JSON.parse(json.stdout));
 
   assert.equal(parsed.reviewRef, review.reviewRef);
   assert.equal(parsed.patch, review.patch);
@@ -106,9 +115,9 @@ test("show-changes prints a Git-backed historical review", async (t) => {
       },
       encoding: "utf8",
     }),
-    (error: unknown) => {
+    (cause: unknown) => {
       assert.match(
-        (error as { stderr?: string }).stderr ?? "",
+        parseExecFileFailure(cause).stderr,
         /Unknown DevSpace review reference/,
       );
 

@@ -14,6 +14,9 @@ import {
   setDevspaceConfigValue,
   setDevspaceConfigValues,
 } from "./user-config.js";
+import { z } from "zod";
+
+const migrationChildResultSchema = z.object({ migrated: z.boolean() });
 
 withConfigDir((configDir, env) => {
   writeFileSync(join(configDir, "config.json"), JSON.stringify({
@@ -127,9 +130,9 @@ withConfigDir((configDir, env) => {
 
   assert.throws(
     () => loadDevspaceFiles(env),
-    (error: unknown) => error instanceof Error
-      && error.message.includes(`backup already exists at ${backupPath}`)
-      && error.message.includes(`Move ${backupPath} out of the way, then run DevSpace again.`),
+    (cause: unknown) => cause instanceof Error
+      && cause.message.includes(`backup already exists at ${backupPath}`)
+      && cause.message.includes(`Move ${backupPath} out of the way, then run DevSpace again.`),
   );
 });
 
@@ -197,7 +200,7 @@ async function migrateInChildProcess(
         return;
       }
 
-      resolve(JSON.parse(stdout) as { migrated: boolean });
+      resolve(migrationChildResultSchema.parse(JSON.parse(stdout)));
     });
   });
 }

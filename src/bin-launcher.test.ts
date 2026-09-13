@@ -4,11 +4,16 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } fr
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 
 const tsxRoot = join(projectRoot, "node_modules", "tsx");
+
+const linkedConfigSchema = z.object({
+  tools: z.object({ mode: z.string() }).optional(),
+});
 
 for (const entrypoint of [
   {
@@ -40,7 +45,7 @@ function testLinkedCheckoutReadsCurrentConfig(): void {
       env: { ...process.env, ...env },
     });
 
-    const config = JSON.parse(output) as { tools?: { mode?: string } };
+    const config = linkedConfigSchema.parse(JSON.parse(output));
     assert.equal(config.tools?.mode, "codex");
   } finally {
     rmSync(root, { recursive: true, force: true });
