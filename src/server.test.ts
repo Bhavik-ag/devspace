@@ -131,15 +131,17 @@ test("UI metadata is limited to workspace and aggregate review", async (t) => {
   }
 });
 
-test("open_workspace reports aggregate review availability", async (t) => {
+test("open_workspace only reports review state when review is unavailable", async (t) => {
   const plain = await fixture(t);
   const gitWorkspace = await fixture(t, { git: true });
 
-  const plainReview = structuredContent(await callOpen(plain.client, plain.project, "plain")).review;
-  const gitReview = structuredContent(await callOpen(gitWorkspace.client, gitWorkspace.project, "git")).review;
+  const plainResult = structuredContent(await callOpen(plain.client, plain.project, "plain"));
+  const gitResult = structuredContent(await callOpen(gitWorkspace.client, gitWorkspace.project, "git"));
 
-  assert.equal((plainReview as { available: boolean }).available, false);
-  assert.deepEqual(gitReview, { available: true });
+  assert.equal(typeof plainResult.review_unavailable, "string");
+  assert.equal("review" in plainResult, false);
+  assert.equal("review_unavailable" in gitResult, false);
+  assert.equal("review" in gitResult, false);
 });
 
 test("show_changes keeps model output compact and preserves the rich review card", async (t) => {
@@ -253,17 +255,21 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal(outputProperties && "workspaceReused" in outputProperties, false);
   assert.equal(outputProperties && "includeBootstrapContext" in outputProperties, false);
   assert.equal(outputProperties && "skill_diagnostics" in outputProperties, false);
+  assert.equal(outputProperties && "source_root" in outputProperties, false);
+  assert.equal(outputProperties && "worktree" in outputProperties, false);
+  assert.equal(outputProperties && "review" in outputProperties, false);
+  assert.ok(outputProperties && "review_unavailable" in outputProperties);
   const providerSchema = outputProperties?.agent_providers as {
     items?: { properties?: Record<string, unknown> };
   } | undefined;
-  assert.ok(providerSchema?.items?.properties?.note);
+  assert.equal(providerSchema?.items?.properties && "note" in providerSchema.items.properties, false);
 
   const firstStructured = structuredContent(first);
   assert.equal(typeof firstStructured.workspace_id, "string");
   assert.equal("workspaceId" in firstStructured, false);
   assert.equal(firstStructured.workspace_id, structuredContent(repeated).workspace_id);
   assert.ok(Array.isArray(firstStructured.agents_files));
-  assert.ok(Array.isArray(firstStructured.available_agents_files));
+  assert.equal(firstStructured.available_agents_files, undefined);
   assert.ok(Array.isArray(firstStructured.skills));
   assert.ok(Array.isArray(firstStructured.agent_providers));
   assert.equal(
@@ -271,8 +277,8 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
     "codex",
   );
   assert.equal(
-    (firstStructured.agent_providers as Array<Record<string, unknown>>)[0]?.note,
-    providerNote,
+    "note" in (firstStructured.agent_providers as Array<Record<string, unknown>>)[0]!,
+    false,
   );
   assert.ok(Array.isArray(firstStructured.agents));
   assert.equal("skill_diagnostics" in firstStructured, false);
@@ -314,8 +320,8 @@ test("open_workspace refreshes provider availability for each catalog", async (t
   });
 
   const unavailable = structuredContent(await callOpen(context.client, context.project, "chat-1"));
-  assert.deepEqual(unavailable.agent_providers, []);
-  assert.deepEqual(unavailable.agents, []);
+  assert.equal(unavailable.agent_providers, undefined);
+  assert.equal(unavailable.agents, undefined);
 
   available = true;
   const usable = structuredContent(await callOpen(context.client, context.project, "chat-2"));
