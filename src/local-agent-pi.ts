@@ -1,5 +1,11 @@
 import { join } from "node:path";
-import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSession,
+  CreateAgentSessionOptions,
+  ModelRegistry,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
+import { z } from "zod";
 import {
   AgentProviderExecutionError,
   AgentProviderProtocolError,
@@ -30,18 +36,19 @@ const PI_FULL_ACCESS_TOOLS = [...PI_WORKSPACE_TOOLS] as const;
 
 const MAX_PI_EVENTS = 10_000;
 
-export type PiSessionLike = Pick<
-  AgentSession,
-  | "sessionId"
-  | "messages"
-  | "modelRegistry"
-  | "prompt"
-  | "subscribe"
-  | "setActiveToolsByName"
-  | "setModel"
-  | "setThinkingLevel"
-  | "dispose"
->;
+type PiThinkingLevel = NonNullable<CreateAgentSessionOptions["thinkingLevel"]>;
+
+export interface PiSessionLike {
+  readonly sessionId: string;
+  messageCount(): number;
+  messagesSince(index: number): PiExternalPayload[];
+  prompt(text: string): Promise<void>;
+  subscribe(listener: (event: PiExternalPayload) => void): () => void;
+  setActiveToolsByName(toolNames: string[]): void;
+  setModel(reference: string): Promise<boolean>;
+  setThinkingLevel(level: PiThinkingLevel): void;
+  dispose(): void;
+}
 
 export type PiSessionFactory = (
   context: LocalAgentRuntimeContext,
@@ -55,7 +62,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
   private alive = true;
   private closed = false;
   private collectingEvents = false;
-  private events: unknown[] = [];
+  private events: PiExternalPayload[] = [];
 
   constructor(
     private readonly session: PiSessionLike,
@@ -86,7 +93,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
         await callbacks?.onSessionId?.(this.session.sessionId);
         await this.applyOverrides(input);
         this.events = [];
-        const messageStart = this.session.messages.length;
+        const messageStart = this.session.messageCount();
         this.collectingEvents = true;
 
         try {
@@ -95,7 +102,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
           this.collectingEvents = false;
         }
 
-        const currentMessages = this.session.messages.slice(messageStart);
+        const currentMessages = this.session.messagesSince(messageStart);
         const finalResponse = extractPiFinalResponse({ messages: currentMessages });
 
         if (!finalResponse) {
@@ -157,9 +164,9 @@ export class PiSessionRuntime implements LocalAgentRuntime {
     this.session.setActiveToolsByName([...piToolsForWriteMode(input.writeMode)]);
 
     if (input.model) {
-      const model = resolvePiModel(this.session.modelRegistry, input.model);
+      const configured = await this.session.setModel(input.model);
 
-      if (!model) {
+      if (!configured) {
         throw new AgentProviderProtocolError({
           code: "PROVIDER_PROTOCOL_ERROR",
           provider: "pi",
@@ -169,11 +176,10 @@ export class PiSessionRuntime implements LocalAgentRuntime {
         });
       }
 
-      await this.session.setModel(model as never);
     }
 
     if (input.effort) {
-      this.session.setThinkingLevel(input.effort as never);
+      this.session.setThinkingLevel(parsePiThinkingLevel(input.effort));
     }
   }
 }
@@ -259,23 +265,28 @@ async function defaultPiSessionFactory(
   let session: PiSessionLike | undefined;
 
   try {
-    const result = await createAgentSession({
+    const sessionOptions: CreateAgentSessionOptions = {
       cwd: input.workspaceRoot,
       agentDir,
       authStorage,
       modelRegistry,
-      sessionManager: sessionManager as never,
+      sessionManager,
       resourceLoader,
-      ...(model ? { model: model as never } : {}),
-      ...(input.effort ? { thinkingLevel: input.effort as never } : {}),
       // Keep the full built-in registry available so warm turns can narrow or
       // broaden active tools without recreating the session.
       tools: [...PI_FULL_ACCESS_TOOLS],
-    });
+    };
 
-    session = result.session;
+    if (model) sessionOptions.model = model;
+
+    if (input.effort) sessionOptions.thinkingLevel = parsePiThinkingLevel(input.effort);
+
+    const result = await createAgentSession(sessionOptions);
+
+    const agentSession = result.session;
+    session = createPiSessionAdapter(agentSession, modelRegistry);
     await registerPiSandboxSession(session, input.workspaceRoot, modeRef, input.writeMode ?? "allowed");
-    session.setActiveToolsByName([...piToolsForWriteMode(input.writeMode)]);
+    agentSession.setActiveToolsByName([...piToolsForWriteMode(input.writeMode)]);
 
     return session;
   } catch (error) {
@@ -327,8 +338,8 @@ export function piToolsForWriteMode(writeMode: LocalAgentRunInput["writeMode"]):
 }
 
 interface PiSessionManagerApi {
-  create(cwd: string): unknown;
-  open(path: string): unknown;
+  create(cwd: string): SessionManager;
+  open(path: string): SessionManager;
   list(cwd: string): Promise<Array<{ id: string; path: string }>>;
 }
 
@@ -336,7 +347,7 @@ async function resolveSessionManager(
   SessionManager: PiSessionManagerApi,
   workspaceRoot: string,
   providerSessionId: string | undefined,
-): Promise<unknown> {
+): Promise<SessionManager> {
   if (!providerSessionId) return SessionManager.create(workspaceRoot);
   const sessions = await SessionManager.list(workspaceRoot);
   const match = sessions.find((session) => session.id === providerSessionId);
@@ -354,7 +365,12 @@ async function resolveSessionManager(
   return SessionManager.open(match.path);
 }
 
-function resolvePiModel(registry: { find(provider: string, modelId: string): unknown; getAll?: () => unknown[] }, reference: string): unknown {
+type PiModel = NonNullable<ReturnType<ModelRegistry["find"]>>;
+
+function resolvePiModel(
+  registry: Pick<ModelRegistry, "find" | "getAll">,
+  reference: string,
+): PiModel | undefined {
   const separator = reference.indexOf("/");
 
   if (separator !== -1) {
@@ -363,29 +379,87 @@ function resolvePiModel(registry: { find(provider: string, modelId: string): unk
 
   const all = registry.getAll?.() ?? [];
 
-  return all.find((model) => asRecord(model)?.id === reference);
+  return all.find((model) => model.id === reference);
 }
 
-export function extractPiFinalResponse(value: unknown): string {
-  const root = unwrapProviderPayload(value);
+function createPiSessionAdapter(
+  session: AgentSession,
+  modelRegistry: Pick<ModelRegistry, "find" | "getAll">,
+): PiSessionLike {
+  return {
+    sessionId: session.sessionId,
+    messageCount: () => session.messages.length,
+    messagesSince: (index) => session.messages.slice(index).flatMap((message) => {
+      const parsed = piMessageSchema.safeParse(message);
+
+      return parsed.success ? [parsed.data] : [];
+    }),
+    prompt: (text) => session.prompt(text),
+    subscribe: (listener) => session.subscribe((event) => {
+      const parsed = piPayloadSchema.safeParse(event);
+
+      if (parsed.success) listener(parsed.data);
+    }),
+    setActiveToolsByName: (toolNames) => session.setActiveToolsByName(toolNames),
+    setModel: async (reference) => {
+      const model = resolvePiModel(modelRegistry, reference);
+
+      if (!model) return false;
+      await session.setModel(model);
+
+      return true;
+    },
+    setThinkingLevel: (level) => session.setThinkingLevel(level),
+    dispose: () => session.dispose(),
+  };
+}
+
+const piThinkingLevelSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+function parsePiThinkingLevel(value: string): PiThinkingLevel {
+  return piThinkingLevelSchema.parse(value);
+}
+
+const piTextPartSchema = z.object({ type: z.literal("text"), text: z.string() });
+
+const piContentSchema = z.union([piTextPartSchema, z.object({ type: z.string() }).passthrough()]);
+
+const piMessageSchema = z.object({ role: z.string(), content: z.array(piContentSchema) }).passthrough();
+
+const piPayloadSchema: z.ZodType<PiPayload> = z.lazy(() => z.union([
+  z.array(piMessageSchema),
+  z.object({ messages: z.array(piMessageSchema), data: piPayloadSchema.optional(), result: piPayloadSchema.optional() }).passthrough(),
+  z.object({ data: piPayloadSchema.optional(), result: piPayloadSchema.optional() }).passthrough(),
+]));
+
+type PiMessage = z.infer<typeof piMessageSchema>;
+
+type PiContent = z.infer<typeof piContentSchema>;
+
+type PiPayload = PiMessage[] | { messages?: PiMessage[]; data?: PiPayload; result?: PiPayload; error?: string; errorMessage?: string; message?: PiPayload };
+
+type PiExternalPayload = z.input<typeof piPayloadSchema>;
+
+function parsePiPayload(value: PiExternalPayload): PiPayload | undefined {
+  const parsed = piPayloadSchema.safeParse(value);
+
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function extractPiFinalResponse(value: PiExternalPayload): string {
+  const root = unwrapProviderPayload(parsePiPayload(value));
   const messages = Array.isArray(root) ? root : readArray(root, "messages");
 
   if (!messages) return "";
 
   for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = asRecord(messages[index]);
+    const message = messages[index];
 
     if (!message || message.role !== "assistant") continue;
-    const content = message.content;
 
-    if (!Array.isArray(content)) continue;
-
-    const text = content
-      .map((part) => {
-        const record = asRecord(part);
-
-        return record?.type === "text" && typeof record.text === "string" ? record.text : "";
-      })
+    const text = message.content
+      .filter((part): part is Extract<PiContent, { type: "text" }> => part.type === "text")
+      .map((part) => part.text)
       .filter(Boolean)
       .join("\n\n")
       .trim();
@@ -396,8 +470,8 @@ export function extractPiFinalResponse(value: unknown): string {
   return "";
 }
 
-export function extractPiProviderError(value: unknown): string {
-  const root = unwrapProviderPayload(value);
+export function extractPiProviderError(value: PiExternalPayload): string {
+  const root = unwrapProviderPayload(parsePiPayload(value));
 
   if (Array.isArray(root)) {
     for (let index = root.length - 1; index >= 0; index -= 1) {
@@ -412,28 +486,22 @@ export function extractPiProviderError(value: unknown): string {
   const messages = readArray(root, "messages");
 
   if (messages) return extractPiProviderError(messages);
-  const record = asRecord(asRecord(root)?.message ?? root);
 
-  if (!record) return "";
-  const error = record.errorMessage ?? record.error;
+  if (!root || Array.isArray(root)) return "";
 
-  return typeof error === "string" ? error.trim() : "";
+  const nested = root.message;
+
+  if (nested) return extractPiProviderError(nested);
+
+  return (root.errorMessage ?? root.error ?? "").trim();
 }
 
-function unwrapProviderPayload(value: unknown): unknown {
-  const record = asRecord(value);
+function unwrapProviderPayload(value: PiPayload | undefined): PiPayload | undefined {
+  if (!value || Array.isArray(value)) return value;
 
-  return record ? record.data ?? record.result ?? value : value;
+  return value.data ?? value.result ?? value;
 }
 
-function readArray(value: unknown, key: string): unknown[] | undefined {
-  const result = asRecord(value)?.[key];
-
-  return Array.isArray(result) ? result : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+function readArray(value: PiPayload | undefined, key: "messages"): PiMessage[] | undefined {
+  return value && !Array.isArray(value) && key in value ? value.messages : undefined;
 }

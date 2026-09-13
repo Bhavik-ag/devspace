@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import type { AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent";
 import {
   PiLocalAgentDriver,
   type PiSessionFactory,
@@ -8,36 +7,52 @@ import {
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import type { LocalAgentRuntimeContext } from "./local-agent-runtime.js";
 
+type FakePiModel = { id: string };
+
+type FakePiMessage = { role: "assistant"; content: Array<{ type: "text"; text: string }> };
+
 class FakePiSession implements PiSessionLike {
   readonly sessionId = "pi_session_1";
-  readonly messages: any[] = [];
-  readonly modelRegistry = { find: () => ({ id: "model" }) } as unknown as PiSessionLike["modelRegistry"];
-  private readonly listeners = new Set<AgentSessionEventListener>();
+  readonly messages: FakePiMessage[] = [];
+  private readonly listeners = new Set<Parameters<PiSessionLike["subscribe"]>[0]>();
   disposeCount = 0;
-  model?: unknown;
-  effort?: unknown;
+  model?: FakePiModel;
+  effort?: "low" | "medium" | "high";
   activeTools: string[] = [];
   toolHistory: string[][] = [];
 
+  constructor(private readonly modelFound = true) {}
+
+  messageCount(): number {
+    return this.messages.length;
+  }
+
+  messagesSince(index: number): FakePiMessage[] {
+    return this.messages.slice(index);
+  }
+
   async prompt(text: string): Promise<void> {
-    const message = {
+    const message: FakePiMessage = {
       role: "assistant",
       content: [{ type: "text", text: `response:${text}` }],
     };
 
     this.messages.push(message);
 
-    for (const listener of this.listeners) listener({ type: "agent_end" } as AgentSessionEvent);
+    for (const listener of this.listeners) listener({ messages: [message] });
   }
 
-  subscribe(listener: AgentSessionEventListener): () => void {
+  subscribe(listener: Parameters<PiSessionLike["subscribe"]>[0]): () => void {
     this.listeners.add(listener);
 
     return () => this.listeners.delete(listener);
   }
 
-  async setModel(model: any): Promise<void> {
-    this.model = model;
+  async setModel(_reference: string): Promise<boolean> {
+    if (!this.modelFound) return false;
+    this.model = { id: "model" };
+
+    return true;
   }
 
   setActiveToolsByName(toolNames: string[]): void {
@@ -45,7 +60,8 @@ class FakePiSession implements PiSessionLike {
     this.toolHistory.push([...toolNames]);
   }
 
-  setThinkingLevel(level: any): void {
+  setThinkingLevel(level: Parameters<PiSessionLike["setThinkingLevel"]>[0]): void {
+    if (level === "off" || level === "minimal" || level === "xhigh") return;
     this.effort = level;
   }
 
@@ -167,9 +183,7 @@ assert.deepEqual(sessions[1]?.activeTools, ["read", "grep", "find", "ls", "edit"
 
 await pool.close();
 
-const missingModelSession = new FakePiSession();
-
-Object.defineProperty(missingModelSession, "modelRegistry", { value: { find: () => undefined } });
+const missingModelSession = new FakePiSession(false);
 
 const missingModelDriver = new PiLocalAgentDriver(async () => missingModelSession);
 
