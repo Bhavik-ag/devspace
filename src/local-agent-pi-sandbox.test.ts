@@ -96,7 +96,7 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
     assert.ok(grep, "Pi sandbox extension registers a grep tool");
     await assert.rejects(
       grep.execute("symlink-grep-test", { pattern: "secret", path: symlinkPath }),
-      /Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
+      /ripgrep \(rg\) is not available|Path not found|outside the allowed root|outside allowed roots|outside the workspace|not allowed/i,
       "restricted Pi grep must not search through symlinks outside the workspace",
     );
 
