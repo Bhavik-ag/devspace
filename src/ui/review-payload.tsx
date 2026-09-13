@@ -52,9 +52,9 @@ function ReviewPayload({
   const themeType: ThemeType = hostContext?.theme === "light" ? "light" : "dark";
   const files = useMemo(() => parseFiles(patch), [patch]);
 
-  const visibleFiles = typeof visibleFileCount === "number"
-    ? files.slice(0, visibleFileCount)
-    : files;
+  const visibleFiles = visibleFileCount === undefined
+    ? files
+    : files.slice(0, visibleFileCount);
 
   const [openFiles, setOpenFiles] = useState(() => new Set<string>());
 
@@ -191,14 +191,15 @@ function parseFiles(patch: string | undefined): FileDiffMetadata[] {
   return parsePatchFiles(patch, "review", true).flatMap((parsedPatch) => parsedPatch.files);
 }
 
-function diffStats(fileDiff: FileDiffMetadata): { additions: number; removals: number } {
-  return fileDiff.hunks.reduce(
-    (stats, hunk) => ({
-      additions: stats.additions + hunk.additionLines,
-      removals: stats.removals + hunk.deletionLines,
-    }),
-    { additions: 0, removals: 0 },
-  );
+function diffStats(fileDiff: FileDiffMetadata) {
+  const stats = { additions: 0, removals: 0 };
+
+  for (const hunk of fileDiff.hunks) {
+    stats.additions += hunk.additionLines;
+    stats.removals += hunk.deletionLines;
+  }
+
+  return stats;
 }
 
 function diffOptions(themeType: ThemeType): FileDiffOptions<undefined> {

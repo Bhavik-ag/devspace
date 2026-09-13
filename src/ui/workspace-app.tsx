@@ -5,6 +5,7 @@ import {
   applyHostStyleVariables,
 } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import * as z from "zod/v4";
 import {
   isExpandableCard,
   isInitiallyExpandedCard,
@@ -26,7 +27,6 @@ import {
 import {
   decodeToolResult,
   toolResultFromChatGptGlobals,
-  type ChatGptToolGlobals,
 } from "./tool-result.js";
 import "./workspace-app.css";
 
@@ -74,6 +74,18 @@ let showAvailableWorkspaceInstructions = false;
 let pendingToolResult: CallToolResult | null = null;
 
 let pendingReviewKey: string | null = null;
+
+const chatGptGlobalsEventSchema = z
+  .object({
+    globals: z
+      .object({
+        toolOutput: z.unknown().optional(),
+        toolResponseMetadata: z.unknown().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
 
 const maybeAppRoot = document.querySelector<HTMLElement>("#app");
 
@@ -247,9 +259,10 @@ function chatGptRestoredResult(): CallToolResult | undefined {
 function handleChatGptGlobalsChanged(event: Event): void {
   if (!connected || card) return;
 
-  const customEvent = event as CustomEvent<{ globals?: ChatGptToolGlobals }>;
+  const customEvent = event instanceof CustomEvent ? event : undefined;
+  const eventDetail = chatGptGlobalsEventSchema.safeParse(customEvent?.detail).data;
 
-  const restored = toolResultFromChatGptGlobals(customEvent.detail?.globals)
+  const restored = toolResultFromChatGptGlobals(eventDetail?.globals)
     ?? chatGptRestoredResult();
 
   if (restored) void applyToolResult(restored);
@@ -1086,8 +1099,8 @@ function element<K extends keyof HTMLElementTagNameMap>(
 
   if (options.ariaExpanded !== undefined) node.setAttribute("aria-expanded", options.ariaExpanded);
 
-  if (options.disabled !== undefined && "disabled" in node) {
-    (node as HTMLButtonElement).disabled = options.disabled;
+  if (options.disabled !== undefined && node instanceof HTMLButtonElement) {
+    node.disabled = options.disabled;
   }
 
   return node;
