@@ -252,6 +252,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal(outputProperties && "workspaceId" in outputProperties, false);
   assert.equal(outputProperties && "workspaceReused" in outputProperties, false);
   assert.equal(outputProperties && "includeBootstrapContext" in outputProperties, false);
+  assert.equal(outputProperties && "skill_diagnostics" in outputProperties, false);
   const providerSchema = outputProperties?.agent_providers as {
     items?: { properties?: Record<string, unknown> };
   } | undefined;
@@ -274,7 +275,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
     providerNote,
   );
   assert.ok(Array.isArray(firstStructured.agents));
-  assert.ok(Array.isArray(firstStructured.skill_diagnostics));
+  assert.equal("skill_diagnostics" in firstStructured, false);
   assert.equal("workspaceReused" in firstStructured, false);
   assert.equal("includeBootstrapContext" in firstStructured, false);
 
@@ -288,7 +289,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal(repeatedStructured.skills, undefined);
   assert.equal(repeatedStructured.agent_providers, undefined);
   assert.equal(repeatedStructured.agents, undefined);
-  assert.equal(repeatedStructured.skill_diagnostics, undefined);
+  assert.equal("skill_diagnostics" in repeatedStructured, false);
   assert.equal("workspaceReused" in repeatedStructured, false);
   assert.equal("includeBootstrapContext" in repeatedStructured, false);
 

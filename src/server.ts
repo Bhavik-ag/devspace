@@ -425,7 +425,6 @@ function registerMcpSurface(
         skills: z.array(workspaceSkillOutputSchema).optional(),
         agent_providers: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
         agents: z.array(workspaceLocalAgentOutputSchema).optional(),
-        skill_diagnostics: z.array(z.unknown()).optional(),
         review: z.discriminatedUnion("available", [
           z.object({ available: z.literal(true) }),
           z.object({
@@ -502,10 +501,10 @@ function registerMcpSurface(
         ? [
             `Workspace already open as ${workspace.id}.`,
             "Continue with this workspace_id.",
-            "Keep following the project instructions, nested instruction files, skills, agent profiles, and diagnostics already provided for this workspace.",
+            "Keep following the project instructions, nested instruction files, skills, and agent profiles already provided for this workspace.",
           ].join("\n\n")
         : workspace.mode === "worktree"
-          ? "Use this workspace_id for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, agent profiles, and diagnostics returned for it."
+          ? "Use this workspace_id for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, and agent profiles returned for it."
           : cardInstruction;
       const instruction = preloadedSubagentInstructions && includeBootstrapContext
         ? [
@@ -604,7 +603,6 @@ function registerMcpSurface(
                 skills: visibleSkills,
                 agent_providers: visibleAgentProviders,
                 agents: visibleAgents,
-                skill_diagnostics: workspace.skillDiagnostics,
               }
             : {}),
           instruction,
