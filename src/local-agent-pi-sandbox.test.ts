@@ -4,6 +4,8 @@ import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { z } from "zod";
 import {
   createPiSandboxConfig,
   createPiSandboxExtension,
@@ -15,22 +17,17 @@ import {
 {
   const workspace = await mkdtemp(join(tmpdir(), "devspace-pi-env-test-"));
   const modeRef = createPiSandboxModeRef("full_access");
-  const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+  const { api, tools } = testToolCollector();
 
   try {
     createPiSandboxExtension(workspace, modeRef, {
       ...process.env,
       DEVSPACE_PI_ENV_TEST: "provider-env",
-    })({
-      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) =>
-        tools.set(tool.name, tool),
-    } as never);
+    })(api);
     const bash = tools.get("bash");
     assert.ok(bash);
 
-    const result = await bash.execute("provider-env-test", { command: "printf %s \"$DEVSPACE_PI_ENV_TEST\"" }) as {
-      content: Array<{ type: string; text?: string }>;
-    };
+    const result = await bash.execute("provider-env-test", { command: "printf %s \"$DEVSPACE_PI_ENV_TEST\"" });
 
     assert.equal(result.content[0]?.text, "provider-env");
   } finally {
@@ -50,15 +47,12 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
   const workspace = join(root, "workspace");
   mkdirSync(workspace);
   const outside = join(root, "outside.txt");
-  const session = {};
+  const session = { sessionId: "sandbox-test" };
   const modeRef = createPiSandboxModeRef("allowed");
-  const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+  const { api, tools } = testToolCollector();
 
   try {
-    createPiSandboxExtension(workspace, modeRef)({
-      registerTool: (tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) =>
-        tools.set(tool.name, tool),
-    } as never);
+    createPiSandboxExtension(workspace, modeRef)(api);
     await registerPiSandboxSession(session, workspace, modeRef, "allowed");
 
     const bash = tools.get("bash");
@@ -125,4 +119,34 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
   }
 } else {
   console.log("Pi sandbox integration test skipped: sandbox-runtime dependencies are unavailable.");
+}
+
+interface TestToolResult {
+  content: Array<{ type: string; text?: string }>;
+}
+
+interface TestTool {
+  name: string;
+  execute(toolCallId: string, params: { [key: string]: string }): Promise<TestToolResult>;
+}
+
+interface TestToolCollector {
+  api: Pick<ExtensionAPI, "registerTool">;
+  tools: Map<string, TestTool>;
+}
+
+function testToolCollector(): TestToolCollector {
+  const tools = new Map<string, TestTool>();
+
+  const registrar = {
+    registerTool: (tool: TestTool) => { tools.set(tool.name, tool); },
+  };
+
+  const extensionRegistrarSchema = z.custom<Pick<ExtensionAPI, "registerTool">>(
+    (value) => z.object({ registerTool: z.function() }).safeParse(value).success,
+  );
+
+  const api = extensionRegistrarSchema.parse(registrar);
+
+  return { api, tools };
 }

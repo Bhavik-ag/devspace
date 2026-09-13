@@ -23,6 +23,11 @@ const context: LocalAgentRuntimeContext = {
 
 const input: LocalAgentRunInput = { prompt: "inspect", workspaceRoot: "/tmp/project" };
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value?: T): void;
+}
+
 for (const [code, retryable] of [["ENOENT", false], ["ECONNREFUSED", true], ["ENOTFOUND", true]] as const) {
   const classified = await captureAgentProviderResult({
     provider: "codex",
@@ -484,10 +489,7 @@ async function waitFor(check: () => boolean): Promise<void> {
   assert.equal(check(), true, "condition did not become true before timeout");
 }
 
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value?: T): void;
-} {
+function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
 
   const promise = new Promise<T>((resolvePromise) => {

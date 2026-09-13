@@ -18,7 +18,6 @@ import {
   createWriteTool,
   type BashOperations,
   type EditOperations,
-  type ExtensionFactory,
   type FindOperations,
   type GrepOperations,
   type LsOperations,
@@ -38,6 +37,10 @@ interface PiSandboxSessionState {
   workspace: string;
   modeRef: PiSandboxModeRef;
   acquired: boolean;
+}
+
+export interface PiSandboxSessionHandle {
+  readonly sessionId?: string;
 }
 
 const PI_NETWORK_ALLOWLIST = [
@@ -78,7 +81,7 @@ let sandboxCommandCount = 0;
 
 const sandboxCommandWaiters = new Set<() => void>();
 
-const sessionStates = new WeakMap<object, PiSandboxSessionState>();
+const sessionStates = new WeakMap<PiSandboxSessionHandle, PiSandboxSessionState>();
 
 export function createPiSandboxModeRef(value: PiSandboxWriteMode): PiSandboxModeRef {
   return { value };
@@ -88,7 +91,7 @@ export function createPiSandboxExtension(
   workspace: string,
   modeRef: PiSandboxModeRef,
   env: NodeJS.ProcessEnv = {},
-): ExtensionFactory {
+): (pi: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "registerTool">) => void {
   return (pi) => {
     const localRead = createReadTool(workspace);
     const restrictedRead = createReadTool(workspace, { operations: createReadOperations(workspace) });
@@ -151,7 +154,7 @@ export function createPiSandboxConfig(workspace?: string): SandboxRuntimeConfig 
 }
 
 export async function registerPiSandboxSession(
-  session: object,
+  session: PiSandboxSessionHandle,
   workspace: string,
   modeRef: PiSandboxModeRef,
   writeMode: PiSandboxWriteMode,
@@ -170,7 +173,7 @@ export async function registerPiSandboxSession(
 }
 
 export async function updatePiSandboxSession(
-  session: object,
+  session: PiSandboxSessionHandle,
   workspace: string,
   writeMode: PiSandboxWriteMode,
 ): Promise<void> {
@@ -185,7 +188,7 @@ export async function updatePiSandboxSession(
   }
 }
 
-export async function releasePiSandboxSession(session: object): Promise<void> {
+export async function releasePiSandboxSession(session: PiSandboxSessionHandle): Promise<void> {
   const state = sessionStates.get(session);
 
   if (!state) return;
@@ -218,7 +221,7 @@ function dynamicTool<T extends { execute: (...args: any[]) => any }>(
   restricted: T,
   modeRef: PiSandboxModeRef,
   writeCapable = false,
-): T {
+){
   return {
     ...restricted,
     execute: (...args: Parameters<T["execute"]>) => {
@@ -228,7 +231,7 @@ function dynamicTool<T extends { execute: (...args: any[]) => any }>(
 
       return (modeRef.value === "full_access" ? unrestricted : restricted).execute(...args);
     },
-  } as T;
+  };
 }
 
 function createReadOperations(workspace: string): ReadOperations {
