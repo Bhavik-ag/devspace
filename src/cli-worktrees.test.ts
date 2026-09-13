@@ -93,7 +93,7 @@ async function pathExists(path: string): Promise<boolean> {
 
     return true;
   } catch (error) {
-    if (typeof error === "object" && error && "code" in error && error.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return false;
     }
 
