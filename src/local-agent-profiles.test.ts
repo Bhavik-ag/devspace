@@ -62,6 +62,7 @@ try {
     workspaces: { allowedRoots: [workspaceRoot] },
     subagents: { enabled: true, instructions: "on-demand", providers: [] },
   }));
+
   const profiles = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
 
   assert.equal(profiles.length, 1);
@@ -91,6 +92,7 @@ try {
     workspaces: { allowedRoots: [workspaceRoot] },
     subagents: { enabled: false, instructions: "on-demand", providers: [] },
   }));
+
   assert.deepEqual(await loadLocalAgentProfiles(disabledConfig, workspaceRoot), []);
 } finally {
   await rm(root, { recursive: true, force: true });

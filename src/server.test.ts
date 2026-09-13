@@ -54,6 +54,7 @@ test("model-facing tool schemas use snake_case recursively", async (t) => {
     await t.test(toolMode, async (nested) => {
       const context = await fixture(nested, { toolMode, uiEnabled: false });
       const tools = await context.client.listTools();
+
       const invalidPaths = tools.tools.flatMap((tool) => [
         ...schemaPropertyPaths(tool.inputSchema)
           .filter(({ key }) => !/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(key))
@@ -74,6 +75,7 @@ test("Codex process tools bound model-facing yield windows to 12 seconds", async
 
   for (const toolName of ["exec_command", "write_stdin"] as const) {
     const tool = tools.tools.find(({ name }) => name === toolName);
+
     const yieldSchema = tool?.inputSchema?.properties?.yield_time_ms as {
       maximum?: number;
       description?: string;
@@ -86,9 +88,11 @@ test("Codex process tools bound model-facing yield windows to 12 seconds", async
 
 test("Claude edit and bash tools accept snake_case runtime inputs", async (t) => {
   const context = await fixture(t, { toolMode: "claude", uiEnabled: false });
+
   const workspaceId = structuredContent(
     await callOpen(context.client, context.project, "snake-case-claude"),
   ).workspace_id;
+
   assert.equal(typeof workspaceId, "string");
 
   await writeFile(join(context.project, "note.txt"), "before\n");
@@ -102,6 +106,7 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
       edits: [{ old_text: "before", new_text: "after" }],
     },
   });
+
   assert.equal(edited.isError, undefined);
   assert.equal(await readFile(join(context.project, "note.txt"), "utf8"), "after\n");
 
@@ -113,6 +118,7 @@ test("Claude edit and bash tools accept snake_case runtime inputs", async (t) =>
       working_directory: "nested",
     },
   }));
+
   assert.match(shell.result as string, /nested/i);
 });
 
@@ -121,6 +127,7 @@ test("UI metadata is limited to workspace and aggregate review", async (t) => {
     await t.test(uiEnabled ? "enabled" : "disabled", async (nested) => {
       const context = await fixture(nested, { toolMode: "claude", uiEnabled });
       const tools = await context.client.listTools();
+
       const toolsWithUi = tools.tools
         .filter((tool) => Boolean((tool._meta as { ui?: unknown } | undefined)?.ui))
         .map((tool) => tool.name)
@@ -144,17 +151,21 @@ test("open_workspace reports aggregate review availability", async (t) => {
 
 test("show_changes keeps model output compact and preserves the rich review card", async (t) => {
   const context = await fixture(t, { git: true, uiEnabled: false });
+
   const opened = structuredContent(
     await callOpen(context.client, context.project, "review"),
   );
+
   const workspaceId = opened.workspace_id;
   assert.equal(typeof workspaceId, "string");
 
   await writeFile(join(context.project, "README.md"), "goodbye\n");
+
   const review = await context.client.callTool({
     name: "show_changes",
     arguments: { workspace_id: workspaceId },
   });
+
   const structured = structuredContent(review);
   assert.equal((review._meta as Record<string, unknown> | undefined)?.tool, undefined);
 
@@ -185,40 +196,50 @@ test("show_changes keeps model output compact and preserves the rich review card
   );
 
   const tools = await context.client.listTools();
+
   const outputProperties = tools.tools.find((tool) => tool.name === "show_changes")
     ?.outputSchema?.properties;
+
   assert.ok(outputProperties && "workspace_id" in outputProperties);
   assert.equal(outputProperties && "workspaceId" in outputProperties, false);
   assert.ok(outputProperties && "review_ref" in outputProperties);
   assert.equal(outputProperties && "summary" in outputProperties, false);
   assert.equal(outputProperties && "files" in outputProperties, false);
   assert.equal(outputProperties && "patch" in outputProperties, false);
+
   const inputProperties = tools.tools.find((tool) => tool.name === "show_changes")
     ?.inputSchema?.properties;
+
   assert.equal(inputProperties && "reviewRef" in inputProperties, false);
 });
 
 test("show_changes can reopen a historical review without advancing the checkpoint", async (t) => {
   const context = await fixture(t, { git: true });
+
   const workspaceId = structuredContent(
     await callOpen(context.client, context.project, "review-history"),
   ).workspace_id;
+
   assert.equal(typeof workspaceId, "string");
 
   await writeFile(join(context.project, "README.md"), "first\n");
+
   const first = structuredContent(await context.client.callTool({
     name: "show_changes",
     arguments: { workspace_id: workspaceId },
   }));
+
   const reviewRef = first.review_ref;
   assert.equal(typeof reviewRef, "string");
 
   await writeFile(join(context.project, "README.md"), "second\n");
+
   const reopened = await context.client.callTool({
     name: "show_changes",
     arguments: { workspace_id: workspaceId },
     _meta: { "devspace/reviewRef": reviewRef },
   } as Parameters<Client["callTool"]>[0]);
+
   assert.equal(structuredContent(reopened).review_ref, reviewRef);
   assert.match(
     (((responseCard(reopened).payload as { patch?: string } | undefined)?.patch) ?? ""),
@@ -229,6 +250,7 @@ test("show_changes can reopen a historical review without advancing the checkpoi
     name: "show_changes",
     arguments: { workspace_id: workspaceId },
   });
+
   assert.match(
     (((responseCard(current).payload as { patch?: string } | undefined)?.patch) ?? ""),
     /-first\n\+second/,
@@ -237,9 +259,11 @@ test("show_changes can reopen a historical review without advancing the checkpoi
 
 test("open_workspace keeps lifecycle flags out of model output and preserves complete card metadata", async (t) => {
   const providerNote = "available";
+
   const context = await fixture(t, {
     localAgentProviders: [{ name: "codex", available: true, note: providerNote }],
   });
+
   const first = await callOpen(context.client, context.project, "chat-1");
   const repeated = await callOpen(context.client, context.project, "chat-1");
   assert.equal((first._meta as Record<string, unknown> | undefined)?.tool, undefined);
@@ -252,9 +276,11 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal(outputProperties && "workspaceId" in outputProperties, false);
   assert.equal(outputProperties && "workspaceReused" in outputProperties, false);
   assert.equal(outputProperties && "includeBootstrapContext" in outputProperties, false);
+
   const providerSchema = outputProperties?.agent_providers as {
     items?: { properties?: Record<string, unknown> };
   } | undefined;
+
   assert.ok(providerSchema?.items?.properties?.note);
 
   const firstStructured = structuredContent(first);
@@ -308,6 +334,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
 
 test("open_workspace refreshes provider availability for each catalog", async (t) => {
   let available = false;
+
   const context = await fixture(t, {
     localAgentProviders: () => [{ name: "codex", available }],
   });
@@ -405,6 +432,7 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
     "tools/list",
     {},
   );
+
   assert.equal(unauthenticated.status, 401, await unauthenticated.clone().text());
 
   const discovery = await postModernMcp(
@@ -413,10 +441,13 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
     "server/discover",
     {},
   );
+
   assert.equal(discovery.status, 200, await discovery.clone().text());
+
   const discoveryBody = await discovery.json() as {
     result?: { supportedVersions?: string[] };
   };
+
   assert.ok(discoveryBody.result?.supportedVersions?.includes("2026-07-28"));
 
   const listed = await postModernMcp(
@@ -425,10 +456,13 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
     "tools/list",
     {},
   );
+
   assert.equal(listed.status, 200, await listed.clone().text());
+
   const listBody = await listed.json() as {
     result?: { tools?: Array<{ name?: string }> };
   };
+
   assert.ok(listBody.result?.tools?.some((tool) => tool.name === "open_workspace"));
 
   const called = await postModernMcp(
@@ -441,10 +475,13 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
       _meta: { "openai/session": "modern-http-test" },
     },
   );
+
   assert.equal(called.status, 200, await called.clone().text());
+
   const callBody = await called.json() as {
     result?: { structuredContent?: { workspace_id?: string; agents_files?: unknown[] } };
   };
+
   const workspaceId = callBody.result?.structuredContent?.workspace_id;
   assert.equal(typeof workspaceId, "string");
 
@@ -458,10 +495,13 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
       _meta: { "openai/session": "modern-http-test" },
     },
   );
+
   assert.equal(repeated.status, 200, await repeated.clone().text());
+
   const repeatedBody = await repeated.json() as {
     result?: { structuredContent?: { workspace_id?: string; agents_files?: unknown[] } };
   };
+
   assert.equal(repeatedBody.result?.structuredContent?.workspace_id, workspaceId);
   assert.equal(repeatedBody.result?.structuredContent?.agents_files, undefined);
 
@@ -483,6 +523,7 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
       },
     }),
   });
+
   assert.equal(legacy.status, 200, await legacy.clone().text());
   assert.equal(legacy.headers.get("mcp-session-id"), null);
   assert.match(await legacy.text(), /"protocolVersion"/);
@@ -501,6 +542,7 @@ test("HTTP endpoint serves modern MCP and stateless legacy clients", async (t) =
       params: {},
     }),
   });
+
   assert.equal(legacyTools.status, 200, await legacyTools.clone().text());
   assert.equal(legacyTools.headers.get("mcp-session-id"), null);
   assert.match(await legacyTools.text(), /"open_workspace"/);
@@ -511,6 +553,7 @@ test("server shutdown waits for an active MCP tool call", async (t) => {
     t,
     "devspace-shutdown-test-",
   );
+
   const opened = await postModernMcp(
     localBaseUrl,
     accessToken,
@@ -521,9 +564,11 @@ test("server shutdown waits for an active MCP tool call", async (t) => {
       _meta: { "openai/session": "shutdown-test" },
     },
   );
+
   const openBody = await opened.json() as {
     result?: { structuredContent?: { workspace_id?: string } };
   };
+
   const workspaceId = openBody.result?.structuredContent?.workspace_id;
   assert.equal(typeof workspaceId, "string");
 
@@ -532,6 +577,7 @@ test("server shutdown waits for an active MCP tool call", async (t) => {
     "fs.writeFileSync('started','')",
     "const timer=setInterval(()=>{if(fs.existsSync('release')) clearInterval(timer)},10)",
   ].join(";");
+
   const toolCall = postModernMcp(
     localBaseUrl,
     accessToken,
@@ -540,17 +586,20 @@ test("server shutdown waits for an active MCP tool call", async (t) => {
       name: "exec_command",
       arguments: {
         workspace_id: workspaceId,
-        cmd: `node -e \"${command}\"`,
+        cmd: `node -e "${command}"`,
         yield_time_ms: 12_000,
       },
     },
   );
+
   await waitForFile(join(root, "started"));
 
   let shutdownFinished = false;
+
   const shutdown = running.close().then(() => {
     shutdownFinished = true;
   });
+
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(shutdownFinished, false);
 
@@ -570,6 +619,7 @@ function schemaPropertyPaths(
   prefix = "",
 ): Array<{ key: string; path: string }> {
   if (!schema || typeof schema !== "object") return [];
+
   const record = schema as {
     properties?: Record<string, unknown>;
     items?: unknown;
@@ -577,16 +627,21 @@ function schemaPropertyPaths(
     oneOf?: unknown[];
     allOf?: unknown[];
   };
+
   const paths = Object.entries(record.properties ?? {}).flatMap(([key, child]) => {
     const path = prefix ? `${prefix}.${key}` : key;
+
     return [{ key, path }, ...schemaPropertyPaths(child, path)];
   });
+
   if (record.items) paths.push(...schemaPropertyPaths(record.items, `${prefix}[]`));
+
   for (const variant of [record.anyOf, record.oneOf, record.allOf]) {
     for (const child of variant ?? []) {
       paths.push(...schemaPropertyPaths(child, prefix));
     }
   }
+
   return paths;
 }
 
@@ -603,6 +658,7 @@ async function httpServerFixture(
 ): Promise<HttpServerFixture> {
   const root = await mkdtemp(join(tmpdir(), prefix));
   const ownerToken = "test-owner-token-that-is-long-enough";
+
   const config = loadConfig(writeTestDevspaceConfig(join(root, ".config"), {
     server: {
       port: 1,
@@ -614,6 +670,7 @@ async function httpServerFixture(
     },
     storage: { stateDir: join(root, ".state") },
   }));
+
   const running = createServer(config, { incomingArtifactAdapters: [] });
   const httpServer = running.app.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => httpServer.once("listening", resolve));
@@ -629,11 +686,13 @@ async function httpServerFixture(
   const address = httpServer.address();
   assert.ok(address && typeof address === "object");
   const localBaseUrl = `http://127.0.0.1:${address.port}`;
+
   const accessToken = await issueTestAccessToken(
     localBaseUrl,
     config.publicBaseUrl,
     ownerToken,
   );
+
   return { root, localBaseUrl, accessToken, running };
 }
 
@@ -677,6 +736,7 @@ async function fixture(
   const initialProviderAvailability = typeof options.localAgentProviders === "function"
     ? options.localAgentProviders()
     : options.localAgentProviders ?? [];
+
   const loadedConfig = loadConfig(writeTestDevspaceConfig(join(root, ".config"), {
     server: { port: 1 },
     workspaces: { allowedRoots: [root], worktreeRoot: join(root, ".worktrees") },
@@ -687,11 +747,13 @@ async function fixture(
       providers: [],
     },
   }));
+
   const modeConfig: ServerConfig = {
     ...loadedConfig,
     toolMode: options.toolMode ?? loadedConfig.toolMode,
     uiEnabled: options.uiEnabled ?? loadedConfig.uiEnabled,
   };
+
   const config: ServerConfig = options.localAgentProviders
     ? {
         ...modeConfig,
@@ -705,16 +767,20 @@ async function fixture(
         },
       }
     : modeConfig;
+
   const resolveProviderAvailability: () => LocalAgentProviderAvailability[] =
     typeof options.localAgentProviders === "function"
       ? options.localAgentProviders
       : () => initialProviderAvailability;
+
   const resolveLocalAgentProviders = () => buildLocalAgentProviderStatuses(
     config.subagents,
     resolveProviderAvailability(),
   );
+
   const store = new SqliteWorkspaceStore(stateDir);
   const workspaces = new WorkspaceRegistry(config, store);
+
   const server = createMcpServer(
     config,
     workspaces,
@@ -723,6 +789,7 @@ async function fixture(
     resolveLocalAgentProviders,
     [],
   );
+
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "devspace-test-client", version: "1.0.0" });
   await Promise.all([
@@ -731,6 +798,7 @@ async function fixture(
   ]);
 
   let closed = false;
+
   const close = async () => {
     if (closed) return;
     closed = true;
@@ -755,11 +823,13 @@ async function waitForFile(path: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     try {
       await access(path);
+
       return;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
   }
+
   assert.fail(`Timed out waiting for ${path}`);
 }
 
@@ -772,6 +842,7 @@ async function issueTestAccessToken(
   const resource = new URL("/mcp", publicBaseUrl).href;
   const verifier = "devspace-modern-protocol-test-verifier-0123456789";
   const challenge = createHash("sha256").update(verifier).digest("base64url");
+
   const registration = await fetch(`${localBaseUrl}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -783,6 +854,7 @@ async function issueTestAccessToken(
       token_endpoint_auth_method: "none",
     }),
   });
+
   assert.equal(registration.status, 201, await registration.clone().text());
   const client = await registration.json() as { client_id?: string };
   assert.ok(client.client_id);
@@ -803,6 +875,7 @@ async function issueTestAccessToken(
     }),
     redirect: "manual",
   });
+
   assert.equal(approval.status, 302, await approval.clone().text());
   const location = approval.headers.get("location");
   assert.ok(location);
@@ -821,9 +894,11 @@ async function issueTestAccessToken(
       resource,
     }),
   });
+
   assert.equal(exchange.status, 200, await exchange.clone().text());
   const tokens = await exchange.json() as { access_token?: string };
   assert.ok(tokens.access_token);
+
   return tokens.access_token;
 }
 
@@ -838,6 +913,7 @@ function postModernMcp(
     : typeof params.uri === "string"
       ? params.uri
       : undefined;
+
   return fetch(`${localBaseUrl}/mcp`, {
     method: "POST",
     headers: {
@@ -885,11 +961,13 @@ async function callOpen(
       ? { _meta: { "openai/session": conversationScopeId } }
       : {}),
   } as Parameters<Client["callTool"]>[0];
+
   return client.callTool(params);
 }
 
 function structuredContent(result: Awaited<ReturnType<Client["callTool"]>>): Record<string, unknown> {
   assert.ok(result.structuredContent);
+
   return result.structuredContent as Record<string, unknown>;
 }
 
@@ -898,5 +976,6 @@ function responseCard(result: Awaited<ReturnType<Client["callTool"]>>): Record<s
   assert.ok(metadata && typeof metadata === "object");
   const card = (metadata as Record<string, unknown>).card;
   assert.ok(card && typeof card === "object");
+
   return card as Record<string, unknown>;
 }

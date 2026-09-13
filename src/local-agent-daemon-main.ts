@@ -13,14 +13,19 @@ import { LocalAgentStore } from "./local-agent-store.js";
 import { localAgentProviderConfigRevision } from "./local-agent-config.js";
 
 const config = loadConfig();
+
 const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 10_000;
+
 const paths = localAgentDaemonPaths(config.stateDir);
+
 const log = (
   level: "info" | "warn" | "error",
   event: string,
   fields: Record<string, unknown>,
 ) => writeLocalAgentDaemonLog(paths, level, event, fields);
+
 const store = new LocalAgentStore(paths.stateDir);
+
 const manager = new LocalAgentManager({
   store,
   drivers: createLocalAgentDrivers({ subagents: config.subagents }),
@@ -31,12 +36,14 @@ const manager = new LocalAgentManager({
   logger: log,
   subagents: config.subagents,
 });
+
 const daemon = new LocalAgentDaemon({
   stateDir: paths.stateDir,
   manager,
   configRevision: localAgentProviderConfigRevision(config.subagents),
   onLockAcquired: () => {
     const reconciled = manager.reconcileActiveRuns();
+
     if (reconciled.isErr()) throw reconciled.error;
   },
   onClosed: () => { if (!shuttingDown) process.exit(0); },
@@ -44,9 +51,11 @@ const daemon = new LocalAgentDaemon({
 });
 
 let shuttingDown = false;
+
 const shutdown = () => {
   if (shuttingDown) return;
   shuttingDown = true;
+
   const forceTimer = setTimeout(() => {
     log("error", "daemon_forced_shutdown", {
       activeTurns: manager.activeTurnCount,
@@ -56,10 +65,13 @@ const shutdown = () => {
     // reconciles them to error while preserving provider continuation data.
     process.exit(1);
   }, parseShutdownTimeoutMs(process.env.DEVSPACE_AGENTD_SHUTDOWN_TIMEOUT_MS));
+
   forceTimer.unref();
   void daemon.close().finally(() => process.exit(0));
 };
+
 process.once("SIGINT", shutdown);
+
 process.once("SIGTERM", shutdown);
 
 try {
@@ -69,6 +81,7 @@ try {
     await manager.close();
     process.exit(0);
   }
+
   log("error", "daemon_start_failed", { error: error instanceof Error ? error.message : String(error) });
   await manager.close();
   console.error(error instanceof Error ? error.message : String(error));
@@ -78,17 +91,21 @@ try {
 function parseIdleShutdownMs(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return 30_000;
   const parsed = Number(value);
+
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error("DEVSPACE_AGENTD_IDLE_TIMEOUT_MS must be a non-negative duration.");
   }
+
   return parsed;
 }
 
 function parseShutdownTimeoutMs(value: string | undefined): number {
   if (value === undefined || value.trim() === "") return DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS;
   const parsed = Number(value);
+
   if (!Number.isFinite(parsed) || parsed < 0) {
     throw new Error("DEVSPACE_AGENTD_SHUTDOWN_TIMEOUT_MS must be a non-negative duration.");
   }
+
   return parsed;
 }

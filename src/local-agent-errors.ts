@@ -233,9 +233,11 @@ export function agentErrorFromPayload(payload: {
   target?: string;
 }): LocalAgentError | undefined {
   const retryable = payload.retryable ?? false;
+
   const provider = payload.provider && isLocalAgentProvider(payload.provider)
     ? payload.provider
     : undefined;
+
   switch (payload.code) {
     case "UNKNOWN_TARGET":
     case "AGENT_NOT_FOUND":
@@ -274,6 +276,7 @@ export function agentErrorFromPayload(payload: {
     case "PROVIDER_PROTOCOL_ERROR":
     case "PROVIDER_EXECUTION_ERROR": {
       if (!provider) return undefined;
+
       const fields = {
         provider,
         agentId: payload.agentId,
@@ -281,17 +284,22 @@ export function agentErrorFromPayload(payload: {
         retryable,
         message: payload.message,
       };
+
       if (payload.code === "PROVIDER_UNAVAILABLE") {
         return new AgentProviderUnavailableError({ code: payload.code, ...fields });
       }
+
       if (payload.code === "PROVIDER_CANCELLED") {
         return new AgentProviderCancelledError({ code: payload.code, ...fields });
       }
+
       if (payload.code === "PROVIDER_PROTOCOL_ERROR") {
         return new AgentProviderProtocolError({ code: payload.code, ...fields });
       }
+
       return new AgentProviderExecutionError({ code: payload.code, ...fields });
     }
+
     case "AGENT_STORE_ERROR":
       return new AgentStoreError(payload.operation ?? "request", undefined, payload.message);
     case "DAEMON_UNAVAILABLE":
@@ -369,8 +377,10 @@ export function providerErrorFromCause(input: {
   cause: unknown;
 }): AgentProviderError | undefined {
   if (isAgentProviderError(input.cause)) return input.cause;
+
   if (isLocalAgentError(input.cause)) return undefined;
   const unavailable = unavailableCauseKind(input.cause);
+
   if (unavailable) {
     return new AgentProviderUnavailableError({
       code: "PROVIDER_UNAVAILABLE",
@@ -382,7 +392,9 @@ export function providerErrorFromCause(input: {
       message: `${displayProvider(input.provider)} provider is unavailable.`,
     });
   }
+
   if (isProgrammerDefect(input.cause)) return undefined;
+
   if (isAbortError(input.cause)) {
     return new AgentProviderCancelledError({
       code: "PROVIDER_CANCELLED",
@@ -394,6 +406,7 @@ export function providerErrorFromCause(input: {
       message: `${displayProvider(input.provider)} agent turn was cancelled.`,
     });
   }
+
   return new AgentProviderExecutionError({
     code: "PROVIDER_EXECUTION_ERROR",
     provider: input.provider,
@@ -420,13 +433,16 @@ export async function captureAgentProviderResult<T>(input: {
       operation: input.operation,
       cause,
     });
+
     if (!error) throw cause;
+
     return Result.err(error);
   }
 }
 
 export function isProgrammerDefect(error: unknown): boolean {
   if (unavailableCauseKind(error)) return false;
+
   return error instanceof TypeError
     || error instanceof ReferenceError
     || error instanceof SyntaxError
@@ -446,13 +462,17 @@ function isAbortError(error: unknown): boolean {
 function unavailableCauseKind(error: unknown): "permanent" | "transient" | undefined {
   const seen = new Set<object>();
   let current = error;
+
   while (current && typeof current === "object" && !seen.has(current)) {
     seen.add(current);
     const code = "code" in current ? String((current as { code?: unknown }).code) : "";
+
     if (code === "ENOENT") return "permanent";
+
     if (code === "ECONNREFUSED" || code === "ENOTFOUND") return "transient";
     current = "cause" in current ? (current as { cause?: unknown }).cause : undefined;
   }
+
   return undefined;
 }
 

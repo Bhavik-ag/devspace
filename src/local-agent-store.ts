@@ -5,6 +5,7 @@ import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import { AgentStoreError, isProgrammerDefect } from "./local-agent-errors.js";
 
 export type LocalAgentStatus = "starting" | "running" | "idle" | "error" | "stopped";
+
 export type LocalAgentTurnStatus = "running" | "completed" | "failed" | "stopped";
 
 export interface LocalAgentRecord {
@@ -113,6 +114,7 @@ export class LocalAgentStore {
 
   list(scope: LocalAgentListScope = {}): LocalAgentRecord[] {
     let rows: LocalAgentRow[];
+
     if (scope.workspaceId && scope.workspaceRoot) {
       rows = this.database.sqlite
         .prepare(
@@ -152,6 +154,7 @@ export class LocalAgentStore {
 
   create(input: CreateLocalAgentRecordInput): LocalAgentRecord {
     const now = new Date().toISOString();
+
     const record: LocalAgentRecord = {
       id: `agt_${randomUUID().replaceAll("-", "").slice(0, 8)}`,
       workspaceId: input.workspaceId,
@@ -208,6 +211,7 @@ export class LocalAgentStore {
          limit 1`,
       )
       .get(id) as LocalAgentRow | undefined;
+
     return exact ? rowToLocalAgentRecord(exact) : undefined;
   }
 
@@ -225,6 +229,7 @@ export class LocalAgentStore {
 
   update(id: string, patch: Partial<Omit<LocalAgentRecord, "id" | "createdAt">>): LocalAgentRecord {
     const current = this.getById(id);
+
     if (!current) throw new Error(`Unknown subagent id: ${id}`);
 
     const updated: LocalAgentRecord = {
@@ -281,10 +286,13 @@ export class LocalAgentStore {
   beginTurn(agentId: string, input: BeginLocalAgentTurnInput): BegunLocalAgentTurn {
     return this.database.sqlite.transaction(() => {
       const current = this.getById(agentId);
+
       if (!current) throw new Error(`Unknown subagent id: ${agentId}`);
+
       if (current.status === "running") {
         throw new Error(`Subagent ${agentId} already has a running turn.`);
       }
+
       const agent = this.update(agentId, {
         status: "running",
         model: input.model,
@@ -294,6 +302,7 @@ export class LocalAgentStore {
         errorCode: undefined,
         errorRetryable: undefined,
       });
+
       const result = this.database.sqlite
         .prepare(
           `insert into local_agent_turns (
@@ -304,8 +313,11 @@ export class LocalAgentStore {
           ) values (?, ?, 'running', ?)`,
         )
         .run(agentId, input.prompt, agent.updatedAt);
+
       const turn = this.getTurnById(Number(result.lastInsertRowid));
+
       if (!turn) throw new Error(`Unable to load the new turn for subagent ${agentId}.`);
+
       return { agent, turn };
     }).immediate();
   }
@@ -324,13 +336,17 @@ export class LocalAgentStore {
   ): LocalAgentRecord {
     return this.database.sqlite.transaction(() => {
       const turn = this.getTurnById(turnId);
+
       if (!turn || turn.agentId !== agentId) {
         throw new Error(`Unknown turn ${turnId} for subagent ${agentId}.`);
       }
+
       if (turn.status !== "running") {
         throw new Error(`Turn ${turnId} for subagent ${agentId} is already ${turn.status}.`);
       }
+
       const currentAgent = this.getById(agentId);
+
       if (!currentAgent) throw new Error(`Unknown subagent id: ${agentId}`);
 
       const completedAt = new Date().toISOString();
@@ -368,6 +384,7 @@ export class LocalAgentStore {
           errorRetryable: undefined,
         });
       }
+
       return this.update(agentId, {
         status: completion.status === "failed" ? "error" : "stopped",
         latestResponse: undefined,
@@ -390,6 +407,7 @@ export class LocalAgentStore {
     const row = this.database.sqlite
       .prepare("select * from local_agent_turns where id = ? limit 1")
       .get(turnId) as LocalAgentTurnRow | undefined;
+
     return row ? rowToLocalAgentTurnRecord(row) : undefined;
   }
 
@@ -403,6 +421,7 @@ export class LocalAgentStore {
     const row = this.database.sqlite
       .prepare("select * from local_agent_turns where agent_id = ? order by id desc limit 1")
       .get(agentId) as LocalAgentTurnRow | undefined;
+
     return row ? rowToLocalAgentTurnRecord(row) : undefined;
   }
 
@@ -416,6 +435,7 @@ export class LocalAgentStore {
     const rows = this.database.sqlite
       .prepare("select * from local_agent_turns where agent_id = ? order by id asc")
       .all(agentId) as LocalAgentTurnRow[];
+
     return rows.map(rowToLocalAgentTurnRecord);
   }
 
@@ -430,6 +450,7 @@ export class LocalAgentStore {
            where status = 'running'`,
         )
         .run(message, now);
+
       const result = this.database.sqlite
         .prepare(
           `update local_agent_sessions
@@ -437,6 +458,7 @@ export class LocalAgentStore {
            where status in ('starting', 'running')`,
         )
         .run(message, now);
+
       return Number(result.changes);
     }).immediate();
   }
@@ -496,12 +518,15 @@ function readTurnStatus(status: string): LocalAgentTurnStatus {
   if (status === "running" || status === "completed" || status === "failed" || status === "stopped") {
     return status;
   }
+
   throw new Error(`Invalid stored local agent turn status: ${status}`);
 }
 
 function readOptionalBoolean(value: string | null): boolean | undefined {
   if (value === "true") return true;
+
   if (value === "false") return false;
+
   return undefined;
 }
 
@@ -510,6 +535,7 @@ function storeResult<T>(operation: string, run: () => T): BetterResult<T, AgentS
     return Result.ok(run());
   } catch (cause) {
     if (isProgrammerDefect(cause)) throw cause;
+
     return Result.err(new AgentStoreError(operation, cause));
   }
 }
@@ -524,5 +550,6 @@ function readStatus(status: string): LocalAgentStatus {
   ) {
     return status;
   }
+
   return "error";
 }

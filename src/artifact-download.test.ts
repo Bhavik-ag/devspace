@@ -33,6 +33,7 @@ const root = await mkdtemp(join(tmpdir(), "devspace-artifact-download-test-"));
 try {
   testOneToolContract();
   testPlatformSupportContract();
+
   if (isArtifactDownloadSupportedPlatform()) {
     await testSafeDownloadAndConflict(join(root, "downloads"));
     await testDestinationValidation(join(root, "destinations"));
@@ -44,6 +45,7 @@ try {
   } else {
     await testUnsupportedPlatform(join(root, "unsupported-platform"));
   }
+
   testLogRedaction();
 } finally {
   await rm(root, { recursive: true, force: true });
@@ -51,6 +53,7 @@ try {
 
 function testOneToolContract(): void {
   const registered = new Map<string, { descriptor: Record<string, unknown>; callback: (input: never) => unknown }>();
+
   const server = {
     registerTool(
       name: string,
@@ -58,6 +61,7 @@ function testOneToolContract(): void {
       callback: (input: never) => unknown,
     ) {
       registered.set(name, { descriptor, callback });
+
       return {};
     },
   };
@@ -79,20 +83,24 @@ function testOneToolContract(): void {
   assert.equal((descriptor.annotations as { destructiveHint?: boolean }).destructiveHint, false);
 
   const fileSchema = (descriptor.inputSchema as z.ZodRawShape).file as z.ZodType;
+
   const valid = {
     download_url: "https://files.oaiusercontent.com/file_123/download?sig=secret",
     file_id: "file_123",
     mime_type: "image/png",
     file_name: "generated.png",
   };
+
   assert.deepEqual(fileSchema.parse(valid), valid);
   assert.throws(() => fileSchema.parse({ file_id: "file_123" }));
 
   const sensitiveExtraValue = "Bearer should-not-leak";
+
   const rejected = fileSchema.safeParse({
     ...valid,
     authorization: sensitiveExtraValue,
   });
+
   assert.equal(rejected.success, false);
   assert.equal(JSON.stringify(rejected).includes(sensitiveExtraValue), false);
 }
@@ -126,6 +134,7 @@ async function testSafeDownloadAndConflict(testRoot: string): Promise<void> {
   const workspaceRoot = join(testRoot, "workspace");
   await mkdir(workspaceRoot, { recursive: true });
   const bytes = Buffer.from("native artifact bytes\u0000\xff", "latin1");
+
   const registry = registryFor({
     name: "../../generated.png",
     size: bytes.length,
@@ -140,6 +149,7 @@ async function testSafeDownloadAndConflict(testRoot: string): Promise<void> {
     file: { native: true },
     path: "public/images/generated.png",
   });
+
   assert.equal(first.path, "public/images/generated.png");
   assert.deepEqual(await readFile(join(workspaceRoot, first.path)), bytes);
 
@@ -326,6 +336,7 @@ async function testPublishedPermissions(testRoot: string): Promise<void> {
   const workspaceRoot = join(testRoot, "workspace");
   await mkdir(workspaceRoot, { recursive: true });
   const previousUmask = process.umask(0o077);
+
   try {
     await downloadIncomingArtifact({
       registry: registryFor({
@@ -356,6 +367,7 @@ function testLogRedaction(): void {
     workspace_id: "ws_secret",
     path: "private/generated.png",
   });
+
   const serialized = JSON.stringify(fields);
   assert.equal(serialized.includes("super-secret"), false);
   assert.equal(serialized.includes("file_secret"), false);
@@ -377,6 +389,7 @@ function registryFor(source: {
       return source;
     },
   };
+
   return new IncomingArtifactAdapterRegistry([adapter]);
 }
 

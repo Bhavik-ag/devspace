@@ -84,6 +84,7 @@ export function presentAgentSummary(record: LocalAgentRecord): AgentSummaryOutpu
 
 export function presentAgentObservation(record: LocalAgentRecord): AgentObservationOutput {
   const receipt = presentAgentReceipt(record);
+
   switch (receipt.status) {
     case "completed":
       return {
@@ -107,9 +108,11 @@ export function presentAgentObservation(record: LocalAgentRecord): AgentObservat
 export function formatAgentTargetCatalog(catalog: AgentTargetCatalogOutput): string {
   return catalog.targets.map((target) => {
     const settings = xmlAttributes({ model: target.model, effort: target.effort });
+
     if (target.kind === "provider") {
       return `<provider name="${escapeXmlAttribute(target.name)}"${settings}/>`;
     }
+
     return `<profile name="${escapeXmlAttribute(target.name)}" provider="${escapeXmlAttribute(target.provider)}"${settings}>${escapeXmlText(target.description)}</profile>`;
   }).join("\n");
 }
@@ -126,17 +129,21 @@ export function formatAgentObservation(observation: AgentObservationOutput): str
   if (observation.status === "running" && observation.wait) {
     return `<agent id="${escapeXmlAttribute(observation.id)}" status="running" wait="${observation.wait}"/>`;
   }
+
   if (observation.status === "completed" && observation.response !== undefined) {
     return `<agent id="${escapeXmlAttribute(observation.id)}" status="completed">${escapeXmlText(observation.response)}</agent>`;
   }
+
   if ((observation.status === "failed" || observation.status === "stopped") && observation.error) {
     return `<agent id="${escapeXmlAttribute(observation.id)}" status="${observation.status}" code="${escapeXmlAttribute(observation.error.code)}" retryable="${observation.error.retryable}">${escapeXmlText(observation.error.message)}</agent>`;
   }
+
   return formatAgentReceipt(observation);
 }
 
 export function formatAgentCommandError(error: AgentCommandErrorOutput): string {
   const agentId = error.agentId ? ` agent-id="${escapeXmlAttribute(error.agentId)}"` : "";
+
   return `<error code="${escapeXmlAttribute(error.code)}" retryable="${error.retryable ?? false}"${agentId}>${escapeXmlText(error.message)}</error>`;
 }
 

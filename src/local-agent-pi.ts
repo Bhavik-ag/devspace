@@ -23,8 +23,11 @@ import {
 } from "./local-agent-pi-sandbox.js";
 
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
+
 const PI_WORKSPACE_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
+
 const PI_FULL_ACCESS_TOOLS = [...PI_WORKSPACE_TOOLS] as const;
+
 const MAX_PI_EVENTS = 10_000;
 
 export type PiSessionLike = Pick<
@@ -59,6 +62,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
   ) {
     this.unsubscribe = session.subscribe((event) => {
       if (!this.collectingEvents) return;
+
       if (this.events.length >= MAX_PI_EVENTS) this.events.shift();
       this.events.push(event);
     });
@@ -78,20 +82,25 @@ export class PiSessionRuntime implements LocalAgentRuntime {
             message: "Pi runtime is not running.",
           });
         }
+
         await callbacks?.onSessionId?.(this.session.sessionId);
         await this.applyOverrides(input);
         this.events = [];
         const messageStart = this.session.messages.length;
         this.collectingEvents = true;
+
         try {
           await this.session.prompt(input.prompt);
         } finally {
           this.collectingEvents = false;
         }
+
         const currentMessages = this.session.messages.slice(messageStart);
         const finalResponse = extractPiFinalResponse({ messages: currentMessages });
+
         if (!finalResponse) {
           const providerError = extractPiProviderError(this.events) || extractPiProviderError(currentMessages);
+
           if (providerError) {
             throw new AgentProviderExecutionError({
               code: "PROVIDER_EXECUTION_ERROR",
@@ -102,6 +111,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
               message: "Pi agent turn failed.",
             });
           }
+
           throw new AgentProviderProtocolError({
             code: "PROVIDER_PROTOCOL_ERROR",
             provider: this.provider,
@@ -110,6 +120,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
             message: "Pi did not return a final assistant response.",
           });
         }
+
         return {
           provider: this.provider,
           providerSessionId: this.session.sessionId,
@@ -133,6 +144,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
     this.closed = true;
     this.alive = false;
     this.unsubscribe();
+
     try {
       await releasePiSandboxSession(this.session);
     } finally {
@@ -143,8 +155,10 @@ export class PiSessionRuntime implements LocalAgentRuntime {
   private async applyOverrides(input: LocalAgentRunInput): Promise<void> {
     await updatePiSandboxSession(this.session, input.workspaceRoot, input.writeMode ?? "allowed");
     this.session.setActiveToolsByName([...piToolsForWriteMode(input.writeMode)]);
+
     if (input.model) {
       const model = resolvePiModel(this.session.modelRegistry, input.model);
+
       if (!model) {
         throw new AgentProviderProtocolError({
           code: "PROVIDER_PROTOCOL_ERROR",
@@ -154,8 +168,10 @@ export class PiSessionRuntime implements LocalAgentRuntime {
           message: `Pi model not found: ${input.model}.`,
         });
       }
+
       await this.session.setModel(model as never);
     }
+
     if (input.effort) {
       this.session.setThinkingLevel(input.effort as never);
     }
@@ -189,7 +205,9 @@ export class PiLocalAgentDriver implements LocalAgentDriver {
           model: context.model,
           effort: context.effort,
         };
+
         const session = await this.factory(context, input, this.env);
+
         return new PiSessionRuntime(session);
       },
     });
@@ -209,6 +227,7 @@ async function defaultPiSessionFactory(
     createAgentSession,
     getAgentDir,
   } = await import("@earendil-works/pi-coding-agent");
+
   // DevSpace's agentDir is the compatibility directory used for instructions;
   // Pi keeps its own native auth, model, and session state under getAgentDir().
   const agentDir = getAgentDir();
@@ -217,6 +236,7 @@ async function defaultPiSessionFactory(
   applyPiProviderEnvironment(modelRegistry, env);
   const sessionManager = await resolveSessionManager(SessionManager, input.workspaceRoot, input.providerSessionId);
   const model = input.model ? resolvePiModel(modelRegistry, input.model) : undefined;
+
   if (input.model && !model) {
     throw new AgentProviderProtocolError({
       code: "PROVIDER_PROTOCOL_ERROR",
@@ -227,13 +247,17 @@ async function defaultPiSessionFactory(
       message: `Pi model not found: ${input.model}.`,
     });
   }
+
   const modeRef = createPiSandboxModeRef(input.writeMode ?? "allowed");
+
   const resourceLoader = new DefaultResourceLoader({
     cwd: input.workspaceRoot,
     agentDir,
     extensionFactories: [createPiSandboxExtension(input.workspaceRoot, modeRef, env)],
   });
+
   let session: PiSessionLike | undefined;
+
   try {
     const result = await createAgentSession({
       cwd: input.workspaceRoot,
@@ -248,9 +272,11 @@ async function defaultPiSessionFactory(
       // broaden active tools without recreating the session.
       tools: [...PI_FULL_ACCESS_TOOLS],
     });
+
     session = result.session;
     await registerPiSandboxSession(session, input.workspaceRoot, modeRef, input.writeMode ?? "allowed");
     session.setActiveToolsByName([...piToolsForWriteMode(input.writeMode)]);
+
     return session;
   } catch (error) {
     if (session) {
@@ -260,6 +286,7 @@ async function defaultPiSessionFactory(
         session.dispose();
       }
     }
+
     throw error;
   }
 }
@@ -269,12 +296,16 @@ function applyPiProviderEnvironment(
   env: NodeJS.ProcessEnv,
 ): void {
   const getApiKeyAndHeaders = modelRegistry.getApiKeyAndHeaders.bind(modelRegistry);
+
   const providerEnv = Object.fromEntries(
     Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined),
   );
+
   modelRegistry.getApiKeyAndHeaders = async (model) => {
     const auth = await getApiKeyAndHeaders(model);
+
     if (!auth.ok) return auth;
+
     return {
       ...auth,
       env: {
@@ -309,6 +340,7 @@ async function resolveSessionManager(
   if (!providerSessionId) return SessionManager.create(workspaceRoot);
   const sessions = await SessionManager.list(workspaceRoot);
   const match = sessions.find((session) => session.id === providerSessionId);
+
   if (!match) {
     throw new AgentProviderProtocolError({
       code: "PROVIDER_PROTOCOL_ERROR",
@@ -318,64 +350,85 @@ async function resolveSessionManager(
       message: `Pi session not found: ${providerSessionId}.`,
     });
   }
+
   return SessionManager.open(match.path);
 }
 
 function resolvePiModel(registry: { find(provider: string, modelId: string): unknown; getAll?: () => unknown[] }, reference: string): unknown {
   const separator = reference.indexOf("/");
+
   if (separator !== -1) {
     return registry.find(reference.slice(0, separator), reference.slice(separator + 1));
   }
+
   const all = registry.getAll?.() ?? [];
+
   return all.find((model) => asRecord(model)?.id === reference);
 }
 
 export function extractPiFinalResponse(value: unknown): string {
   const root = unwrapProviderPayload(value);
   const messages = Array.isArray(root) ? root : readArray(root, "messages");
+
   if (!messages) return "";
+
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = asRecord(messages[index]);
+
     if (!message || message.role !== "assistant") continue;
     const content = message.content;
+
     if (!Array.isArray(content)) continue;
+
     const text = content
       .map((part) => {
         const record = asRecord(part);
+
         return record?.type === "text" && typeof record.text === "string" ? record.text : "";
       })
       .filter(Boolean)
       .join("\n\n")
       .trim();
+
     if (text) return text;
   }
+
   return "";
 }
 
 export function extractPiProviderError(value: unknown): string {
   const root = unwrapProviderPayload(value);
+
   if (Array.isArray(root)) {
     for (let index = root.length - 1; index >= 0; index -= 1) {
       const error = extractPiProviderError(root[index]);
+
       if (error) return error;
     }
+
     return "";
   }
+
   const messages = readArray(root, "messages");
+
   if (messages) return extractPiProviderError(messages);
   const record = asRecord(asRecord(root)?.message ?? root);
+
   if (!record) return "";
   const error = record.errorMessage ?? record.error;
+
   return typeof error === "string" ? error.trim() : "";
 }
 
 function unwrapProviderPayload(value: unknown): unknown {
   const record = asRecord(value);
+
   return record ? record.data ?? record.result ?? value : value;
 }
 
 function readArray(value: unknown, key: string): unknown[] | undefined {
   const result = asRecord(value)?.[key];
+
   return Array.isArray(result) ? result : undefined;
 }
 

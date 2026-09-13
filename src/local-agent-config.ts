@@ -40,6 +40,7 @@ export const subagentsConfigSchema = z.object({
   providers: z.array(providerSchema),
 }).strict().superRefine((value, context) => {
   const seen = new Set<LocalAgentProvider>();
+
   for (const [index, provider] of value.providers.entries()) {
     if (seen.has(provider.id)) {
       context.addIssue({
@@ -48,6 +49,7 @@ export const subagentsConfigSchema = z.object({
         message: `Duplicate subagent provider: ${provider.id}`,
       });
     }
+
     seen.add(provider.id);
   }
 });
@@ -58,7 +60,9 @@ export const storedSubagentsConfigSchema = z.union([
 ]);
 
 export type SubagentProviderConfig = z.infer<typeof providerSchema>;
+
 export type SubagentsConfig = z.infer<typeof subagentsConfigSchema>;
+
 export type StoredSubagentsConfig = z.infer<typeof storedSubagentsConfigSchema>;
 
 export function subagentProviderConfig(
@@ -84,7 +88,9 @@ export function localAgentProviderEnvironment(
   const env = { ...inherited, ...providerConfig?.env };
   const commandVariable = providerCommandVariable(provider);
   const command = providerConfig && "command" in providerConfig ? providerConfig.command : undefined;
+
   if (commandVariable && command) env[commandVariable] = command;
+
   return env;
 }
 
@@ -125,6 +131,7 @@ export function localAgentProviderConfigRevision(config: SubagentsConfig): strin
           }
         : {}),
     }));
+
   return createHash("sha256")
     .update(JSON.stringify({ enabled: config.enabled, providers }))
     .digest("hex");

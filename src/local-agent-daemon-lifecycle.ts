@@ -13,10 +13,15 @@ import {
 import { join, resolve } from "node:path";
 
 export const LOCAL_AGENT_DAEMON_PROTOCOL_VERSION = 5;
+
 export const LOCAL_AGENT_DAEMON_SOCKET_NAME = "agentd.sock";
+
 export const LOCAL_AGENT_DAEMON_PID_NAME = "agentd.pid";
+
 export const LOCAL_AGENT_DAEMON_LOCK_NAME = "agentd.lock";
+
 export const LOCAL_AGENT_DAEMON_SECRET_NAME = "agentd.secret";
+
 export const LOCAL_AGENT_DAEMON_LOG_NAME = "agentd.log";
 
 export interface LocalAgentDaemonPaths {
@@ -35,6 +40,7 @@ export function localAgentDaemonPaths(
 ): LocalAgentDaemonPaths {
   const resolvedStateDir = resolve(stateDir);
   const socketPath = join(resolvedStateDir, LOCAL_AGENT_DAEMON_SOCKET_NAME);
+
   return {
     stateDir: resolvedStateDir,
     socketPath,
@@ -69,9 +75,11 @@ export class LocalAgentDaemonLock {
 
   acquire(): void {
     ensureLocalAgentDaemonStateDir(this.paths.stateDir);
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const temporaryPath = `${this.paths.lockPath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
       let published = false;
+
       try {
         writeFileSecure(temporaryPath, `${process.pid}\n`);
         // Publish the owner record atomically. An empty lock must never be
@@ -82,34 +90,43 @@ export class LocalAgentDaemonLock {
         chmodSync(this.paths.lockPath, 0o600);
         writeFileSecure(this.paths.pidPath, `${process.pid}\n`);
         this.acquired = true;
+
         return;
       } catch (error) {
         rmSync(temporaryPath, { force: true });
+
         if (published && readDaemonPid(this.paths.lockPath) === process.pid) {
           rmSync(this.paths.lockPath, { force: true });
         }
+
         if (!isFileExistsError(error)) throw error;
         const pid = readDaemonPid(this.paths.lockPath);
+
         if (pid !== undefined && isProcessAlive(pid)) {
           throw new LocalAgentDaemonAlreadyRunningError(pid);
         }
+
         if (pid === undefined) {
           // An undecodable lock may belong to a process that has not finished
           // publishing its owner record. Refuse to delete it automatically.
           throw new LocalAgentDaemonAlreadyRunningError();
         }
+
         if (!removeStaleLock(this.paths.lockPath)) continue;
       }
     }
+
     throw new LocalAgentDaemonAlreadyRunningError(readDaemonPid(this.paths.lockPath));
   }
 
   release(): void {
     if (!this.acquired) return;
     this.acquired = false;
+
     if (readDaemonPid(this.paths.pidPath) === process.pid) {
       rmSync(this.paths.pidPath, { force: true });
     }
+
     if (readDaemonPid(this.paths.lockPath) === process.pid) {
       rmSync(this.paths.lockPath, { force: true });
     }
@@ -118,19 +135,24 @@ export class LocalAgentDaemonLock {
 
 export function ensureLocalAgentDaemonSecret(paths: LocalAgentDaemonPaths): string {
   ensureLocalAgentDaemonStateDir(paths.stateDir);
+
   try {
     const secret = readFileSync(paths.secretPath, "utf8").trim();
+
     if (isDaemonSecret(secret)) return secret;
   } catch {
     // Create the secret below.
   }
 
   const secret = randomBytes(32).toString("hex");
+
   try {
     const fileDescriptor = openSync(paths.secretPath, "wx", 0o600);
+
     try {
       writeSync(fileDescriptor, `${secret}\n`);
       chmodSync(paths.secretPath, 0o600);
+
       return secret;
     } finally {
       closeSync(fileDescriptor);
@@ -138,7 +160,9 @@ export function ensureLocalAgentDaemonSecret(paths: LocalAgentDaemonPaths): stri
   } catch (error) {
     if (!isFileExistsError(error)) throw error;
     const existing = readFileSync(paths.secretPath, "utf8").trim();
+
     if (!isDaemonSecret(existing)) throw new Error("Local agent daemon secret is invalid.");
+
     return existing;
   }
 }
@@ -146,6 +170,7 @@ export function ensureLocalAgentDaemonSecret(paths: LocalAgentDaemonPaths): stri
 export function readLocalAgentDaemonSecret(paths: LocalAgentDaemonPaths): string | undefined {
   try {
     const secret = readFileSync(paths.secretPath, "utf8").trim();
+
     return isDaemonSecret(secret) ? secret : undefined;
   } catch {
     return undefined;
@@ -154,14 +179,17 @@ export function readLocalAgentDaemonSecret(paths: LocalAgentDaemonPaths): string
 
 export function removeLocalAgentDaemonFiles(paths: LocalAgentDaemonPaths): void {
   rmSync(paths.pidPath, { force: true });
+
   if (process.platform !== "win32") rmSync(paths.socketPath, { force: true });
 }
 
 export function readDaemonPid(pidPath: string): number | undefined {
   try {
     const value = readFileSync(pidPath, "utf8").trim();
+
     if (!/^\d+$/.test(value)) return undefined;
     const pid = Number(value);
+
     return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
   } catch {
     return undefined;
@@ -171,6 +199,7 @@ export function readDaemonPid(pidPath: string): number | undefined {
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
+
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
@@ -179,6 +208,7 @@ export function isProcessAlive(pid: number): boolean {
 
 function writeFileSecure(path: string, content: string): void {
   const fileDescriptor = openSync(path, "w", 0o600);
+
   try {
     writeSync(fileDescriptor, content);
     chmodSync(path, 0o600);
@@ -193,12 +223,14 @@ function isFileExistsError(error: unknown): boolean {
 
 function removeStaleLock(path: string): boolean {
   const stalePath = `${path}.stale-${process.pid}-${randomBytes(8).toString("hex")}`;
+
   try {
     // Rename moves the exact lock we inspected out of the ownership path. If
     // another contender publishes a new lock after this point, it is never
     // removed with the stale one.
     renameSync(path, stalePath);
     rmSync(stalePath, { force: true });
+
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;

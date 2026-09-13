@@ -17,8 +17,11 @@ import { LocalAgentStore } from "./local-agent-store.js";
 import { writeTestDevspaceConfig } from "./test-support/config.test.js";
 
 const execFileAsync = promisify(execFile);
+
 const require = createRequire(import.meta.url);
+
 const tsxLoader = pathToFileURL(require.resolve("tsx")).href;
+
 const cliPath = fileURLToPath(new URL("./cli.ts", import.meta.url));
 
 const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
@@ -35,6 +38,7 @@ for (const flag of ["-v", "--version"]) {
 }
 
 const root = mkdtempSync(join(tmpdir(), "devspace-cli-agents-test-"));
+
 try {
   const configDir = join(root, ".devspace");
   const stateDir = join(root, ".state");
@@ -42,11 +46,13 @@ try {
   mkdirSync(stateDir, { recursive: true });
   mkdirSync(join(configDir, "agents"), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
+
   const cliConfigEnv = writeTestDevspaceConfig(configDir, {
     workspaces: { allowedRoots: [projectRoot] },
     storage: { stateDir },
     subagents: { enabled: true, instructions: "on-demand", providers: [] },
   });
+
   writeFileSync(
     join(configDir, "agents", "reviewer.md"),
     [
@@ -63,6 +69,7 @@ try {
     ].join("\n"),
   );
   const store = new LocalAgentStore(stateDir);
+
   const current = store.update(
     store.create({
       workspaceId: "ws_current",
@@ -74,6 +81,7 @@ try {
     }).id,
     { status: "idle", latestResponse: "Review complete.", providerSessionId: "provider_secret" },
   );
+
   const other = store.update(
     store.create({
       workspaceId: "ws_other",
@@ -83,23 +91,29 @@ try {
     }).id,
     { status: "running" },
   );
+
   store.close();
 
   const daemonSocket = localAgentDaemonPaths(stateDir).endpoint;
   const daemonRequests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+
   const daemon = createNetServer((socket) => {
     let buffer = "";
     socket.setEncoding("utf8");
     socket.on("data", (chunk: string | Buffer) => {
       buffer += chunk.toString();
       const newline = buffer.indexOf("\n");
+
       if (newline === -1) return;
+
       const request = JSON.parse(buffer.slice(0, newline)) as {
         requestId: string;
         method: string;
         params?: Record<string, unknown>;
       };
+
       daemonRequests.push(request);
+
       if (request.method === "agent.start") {
         socket.end(encodeLocalAgentDaemonResponse({
           requestId: request.requestId,
@@ -112,8 +126,10 @@ try {
             target: "missing",
           },
         }));
+
         return;
       }
+
       const result = request.method === "agent.list"
         ? [current]
         : request.method === "agent.get"
@@ -138,6 +154,7 @@ try {
               configMatches: true,
             }
           : null;
+
       socket.end(encodeLocalAgentDaemonResponse({
         requestId: request.requestId,
         protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
@@ -146,6 +163,7 @@ try {
       }));
     });
   });
+
   await new Promise<void>((resolveListen, rejectListen) => {
     daemon.once("error", rejectListen);
     daemon.listen(daemonSocket, resolveListen);
@@ -182,6 +200,7 @@ try {
         },
       },
     );
+
     assert.equal(
       jsonOutput,
       `${JSON.stringify([{ id: current.id, status: "completed", target: "reviewer" }])}\n`,
@@ -201,6 +220,7 @@ try {
         },
       },
     );
+
     assert.match(directOutput, new RegExp(current.id));
     const directList = [...daemonRequests].reverse().find((request) => request.method === "agent.list");
     assert.deepEqual(directList?.params, { workspaceRoot: realpathSync.native(projectRoot) });
@@ -219,6 +239,7 @@ try {
         },
       },
     );
+
     assert.equal(
       showOutput,
       `<agent id="${current.id}" status="completed">Review complete.</agent>\n`,
@@ -253,6 +274,7 @@ try {
         },
       },
     );
+
     assert.equal(
       waitOutput,
       [
@@ -269,6 +291,7 @@ try {
     });
 
     let commandFailure: unknown;
+
     try {
       await execFileAsync(
         "node",
@@ -287,16 +310,20 @@ try {
     } catch (error) {
       commandFailure = error;
     }
+
     assert.ok(commandFailure, "structured CLI errors should exit non-zero");
     const stdout = (commandFailure as { stdout?: string }).stdout ?? "";
+
     const payload = JSON.parse(stdout) as {
       error: { code: string; message: string; retryable: boolean; target: string };
     };
+
     assert.equal(payload.error.code, "UNKNOWN_TARGET");
     assert.equal(payload.error.retryable, false);
     assert.equal(payload.error.target, "missing");
 
     let xmlCommandFailure: unknown;
+
     try {
       await execFileAsync(
         "node",
@@ -315,6 +342,7 @@ try {
     } catch (error) {
       xmlCommandFailure = error;
     }
+
     assert.ok(xmlCommandFailure, "XML CLI errors should exit non-zero");
     assert.equal(
       (xmlCommandFailure as { stderr?: string }).stderr,
@@ -351,6 +379,7 @@ try {
           (error as { stderr?: string }).stderr,
           '<error code="AGENT_COMMAND_ERROR" retryable="false">Unknown option: --unknown. Use -- before prompt text that starts with a dash.</error>\n',
         );
+
         return true;
       },
     );

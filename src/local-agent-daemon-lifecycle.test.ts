@@ -13,6 +13,7 @@ import {
 } from "./local-agent-daemon-lifecycle.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-agentd-lifecycle-test-"));
+
 try {
   const paths = localAgentDaemonPaths(join(root, "state"));
   ensureLocalAgentDaemonStateDir(paths.stateDir);

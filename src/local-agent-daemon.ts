@@ -45,9 +45,13 @@ import type {
 import type { LocalAgentRecord, LocalAgentWorkspaceScope } from "./local-agent-store.js";
 
 const MAX_REQUEST_BYTES = 512 * 1024;
+
 const DEFAULT_DAEMON_IDLE_SHUTDOWN_MS = 30_000;
+
 const DEFAULT_IDLE_CHECK_INTERVAL_MS = 1_000;
+
 const DEFAULT_REQUEST_READ_TIMEOUT_MS = 5_000;
+
 const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 10_000;
 
 export interface LocalAgentDaemonManager {
@@ -117,12 +121,15 @@ export class LocalAgentDaemon {
     this.now = options.now ?? Date.now;
     this.onLockAcquired = options.onLockAcquired;
     this.onClosed = options.onClosed;
+
     if (!Number.isFinite(this.idleShutdownMs) || this.idleShutdownMs < 0) {
       throw new Error("Agent daemon idle shutdown must be a non-negative finite duration.");
     }
+
     if (!Number.isFinite(this.requestReadTimeoutMs) || this.requestReadTimeoutMs <= 0) {
       throw new Error("Agent daemon request read timeout must be a positive finite duration.");
     }
+
     if (!Number.isFinite(this.shutdownTimeoutMs) || this.shutdownTimeoutMs < 0) {
       throw new Error("Agent daemon shutdown timeout must be a non-negative finite duration.");
     }
@@ -132,16 +139,19 @@ export class LocalAgentDaemon {
     if (this.server) return this.status();
     ensureLocalAgentDaemonStateDir(this.paths.stateDir);
     let lockAcquired = false;
+
     try {
       this.lock.acquire();
       lockAcquired = true;
       this.ownsLock = true;
       this.authToken = ensureLocalAgentDaemonSecret(this.paths);
       await this.onLockAcquired?.();
+
       if (process.platform !== "win32") rmSync(this.paths.socketPath, { force: true });
       const server = createServer((socket) => this.handleConnection(socket));
       this.server = server;
       await listen(server, this.paths.endpoint);
+
       if (process.platform !== "win32") chmodSync(this.paths.socketPath, 0o600);
       this.startedAt = new Date(this.now()).toISOString();
       this.accepting = true;
@@ -155,15 +165,18 @@ export class LocalAgentDaemon {
       }, this.idleCheckIntervalMs);
       this.idleTimer.unref();
       writeLocalAgentDaemonLog(this.paths, "info", "daemon_started", { pid: process.pid });
+
       return this.status();
     } catch (error) {
       this.server = undefined;
       this.authToken = undefined;
+
       if (lockAcquired) {
         this.lock.release();
         this.ownsLock = false;
         removeLocalAgentDaemonFiles(this.paths);
       }
+
       if (error instanceof LocalAgentDaemonAlreadyRunningError) throw error;
       throw error;
     }
@@ -171,6 +184,7 @@ export class LocalAgentDaemon {
 
   status(): LocalAgentDaemonStatus {
     if (!this.startedAt) throw new Error("Local agent daemon is not started.");
+
     return {
       state: this.stopping ? "stopping" : "ready",
       protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
@@ -185,31 +199,38 @@ export class LocalAgentDaemon {
 
   async close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
+
     if (!this.ownsLock && !this.server) return;
     this.accepting = false;
     this.stopping = true;
+
     if (this.idleTimer) clearInterval(this.idleTimer);
     this.closePromise = (async () => {
       writeLocalAgentDaemonLog(this.paths, "info", "daemon_stopping", {
         activeTurns: this.manager.activeTurnCount,
         runtimeCount: this.manager.runtimeCount,
       });
+
       for (const socket of this.sockets) socket.destroy();
       this.sockets.clear();
+
       const [serverResult, managerResult] = await Promise.allSettled([
         withTimeout(closeServer(this.server), this.shutdownTimeoutMs, "daemon socket shutdown"),
         withTimeout(this.manager.close(), this.shutdownTimeoutMs, "daemon manager shutdown"),
       ]);
+
       if (serverResult.status === "rejected") {
         writeLocalAgentDaemonLog(this.paths, "warn", "daemon_socket_close_failed", {
           error: errorMessage(serverResult.reason),
         });
       }
+
       if (managerResult.status === "rejected") {
         writeLocalAgentDaemonLog(this.paths, "warn", "daemon_manager_close_failed", {
           error: errorMessage(managerResult.reason),
         });
       }
+
       removeLocalAgentDaemonFiles(this.paths);
       this.lock.release();
       writeLocalAgentDaemonLog(this.paths, "info", "daemon_stopped", {});
@@ -217,6 +238,7 @@ export class LocalAgentDaemon {
       this.authToken = undefined;
       this.onClosed?.();
     })();
+
     return this.closePromise;
   }
 
@@ -226,6 +248,7 @@ export class LocalAgentDaemon {
     socket.setEncoding("utf8");
     let buffer = "";
     let handled = false;
+
     const requestTimer = setTimeout(() => {
       if (handled) return;
       handled = true;
@@ -237,10 +260,12 @@ export class LocalAgentDaemon {
       })));
       socket.destroy();
     }, this.requestReadTimeoutMs);
+
     requestTimer.unref();
     socket.on("data", (chunk: string | Buffer) => {
       if (handled) return;
       buffer += chunk.toString();
+
       if (Buffer.byteLength(buffer, "utf8") > MAX_REQUEST_BYTES) {
         handled = true;
         this.writeError(socket, "", toAgentErrorPayload(new AgentDaemonInvalidRequestError({
@@ -249,9 +274,12 @@ export class LocalAgentDaemon {
           retryable: false,
           operation: "request",
         })));
+
         return;
       }
+
       const newline = buffer.indexOf("\n");
+
       if (newline === -1) return;
       handled = true;
       clearTimeout(requestTimer);
@@ -268,13 +296,16 @@ export class LocalAgentDaemon {
 
   private async handleLine(socket: Socket, line: string, signal: AbortSignal): Promise<void> {
     let requestId = "";
+
     try {
       let parsed: unknown;
+
       try {
         parsed = JSON.parse(line);
       } catch (cause) {
         throw new LocalAgentDaemonProtocolError("INVALID_REQUEST", "Daemon request is not valid JSON.", { cause });
       }
+
       requestId = readRequestId(parsed);
       const request = decodeLocalAgentDaemonRequest(parsed);
       const response = await this.dispatch(request, signal);
@@ -284,6 +315,7 @@ export class LocalAgentDaemon {
         ok: true,
         result: response,
       }));
+
       if (request.method === "daemon.stop") setImmediate(() => { void this.close(); });
     } catch (error) {
       this.writeError(socket, requestId, daemonErrorPayload(error));
@@ -297,13 +329,16 @@ export class LocalAgentDaemon {
         `Unsupported daemon protocol version ${request.protocolVersion}; expected ${LOCAL_AGENT_DAEMON_PROTOCOL_VERSION}.`,
       );
     }
+
     this.assertAuthenticated(request.authToken);
+
     if (request.method === "hello" && !request.configRevision) {
       throw new LocalAgentDaemonProtocolError(
         "INVALID_REQUEST",
         "Daemon hello requires a provider configuration revision.",
       );
     }
+
     if (!this.accepting && request.method !== "hello" && request.method !== "daemon.status") {
       throw new AgentDaemonUnavailableError({
         code: "DAEMON_UNAVAILABLE",
@@ -344,6 +379,7 @@ export class LocalAgentDaemon {
       case "daemon.stop":
         if (request.params.ifIdle) {
           this.accepting = false;
+
           if (this.activeTurnRequests > 0 || this.manager.activeTurnCount > 0) {
             this.accepting = true;
             throw new AgentDaemonUnavailableError({
@@ -354,8 +390,10 @@ export class LocalAgentDaemon {
             });
           }
         }
+
         this.stopping = true;
         this.accepting = false;
+
         return this.status();
       case "daemon.logs":
         return readLocalAgentDaemonLogs(this.paths, request.params.lines);
@@ -366,6 +404,7 @@ export class LocalAgentDaemon {
     operation: () => Promise<Result<T, unknown>>,
   ): Promise<T> {
     this.activeTurnRequests += 1;
+
     try {
       return unwrapManagerResult(await operation());
     } finally {
@@ -384,6 +423,7 @@ export class LocalAgentDaemon {
 
   private assertAuthenticated(authToken: string): void {
     const expected = this.authToken;
+
     if (!expected || !safeEqual(authToken, expected)) {
       throw new LocalAgentDaemonProtocolError("UNAUTHORIZED", "Invalid local agent daemon credentials.");
     }
@@ -391,12 +431,16 @@ export class LocalAgentDaemon {
 
   private async maintainIdle(): Promise<void> {
     await this.manager.evictIdle(this.now());
+
     if (this.stopping || this.manager.activeTurnCount > 0 || this.manager.runtimeCount > 0 || this.sockets.size > 0) {
       this.idleSince = undefined;
+
       return;
     }
+
     const now = this.now();
     this.idleSince ??= now;
+
     if (now - this.idleSince >= this.idleShutdownMs) await this.close();
   }
 }
@@ -407,10 +451,12 @@ async function listen(server: NetServer, endpoint: string): Promise<void> {
       server.off("listening", onListening);
       reject(error);
     };
+
     const onListening = () => {
       server.off("error", onError);
       resolve();
     };
+
     server.once("error", onError);
     server.once("listening", onListening);
     server.listen(endpoint);
@@ -419,6 +465,7 @@ async function listen(server: NetServer, endpoint: string): Promise<void> {
 
 async function closeServer(server: NetServer | undefined): Promise<void> {
   if (!server) return;
+
   if (!server.listening) return;
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
@@ -429,7 +476,9 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation:
   if (timeoutMs === 0) {
     throw new Error(`${operation} timed out.`);
   }
+
   let timer: NodeJS.Timeout | undefined;
+
   try {
     return await Promise.race([
       promise,
@@ -446,12 +495,14 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, operation:
 function safeEqual(actual: string, expected: string): boolean {
   const actualBuffer = Buffer.from(actual);
   const expectedBuffer = Buffer.from(expected);
+
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
 function readRequestId(value: unknown): string {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const requestId = (value as Record<string, unknown>).requestId;
+
   return typeof requestId === "string" ? requestId : "";
 }
 
@@ -473,6 +524,7 @@ export function writeLocalAgentDaemonLog(
 export function readLocalAgentDaemonLogs(paths: LocalAgentDaemonPaths, lines = 200): string {
   try {
     const content = readFileSync(paths.logPath, "utf8");
+
     return content.split(/\r?\n/).filter(Boolean).slice(-Math.max(1, lines)).join("\n");
   } catch {
     return "";
@@ -485,6 +537,7 @@ function errorMessage(error: unknown): string {
 
 function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
   if (isLocalAgentError(error)) return toAgentErrorPayload(error);
+
   if (error instanceof LocalAgentDaemonProtocolError) {
     if (error.code === "PROTOCOL_MISMATCH") {
       return toAgentErrorPayload(new AgentDaemonProtocolMismatchError({
@@ -495,6 +548,7 @@ function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
         message: error.message,
       }));
     }
+
     if (error.code === "UNAUTHORIZED") {
       return toAgentErrorPayload(new AgentDaemonUnauthorizedError({
         code: "DAEMON_UNAUTHORIZED",
@@ -504,6 +558,7 @@ function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
         message: error.message,
       }));
     }
+
     return toAgentErrorPayload(new AgentDaemonInvalidRequestError({
       code: "DAEMON_INVALID_REQUEST",
       operation: "request",
@@ -512,6 +567,7 @@ function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
       message: error.message,
     }));
   }
+
   return toAgentErrorPayload(new AgentDaemonInternalError({
     code: "DAEMON_INTERNAL_ERROR",
     operation: "request",
@@ -523,5 +579,6 @@ function daemonErrorPayload(error: unknown): LocalAgentDaemonErrorPayload {
 
 function unwrapManagerResult<T, E>(result: Result<T, E>): T {
   if (result.isErr()) throw result.error;
+
   return result.value;
 }

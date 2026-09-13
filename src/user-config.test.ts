@@ -57,6 +57,7 @@ await withConfigDirAsync(async (configDir) => {
     migrateInChildProcess(configDir),
     migrateInChildProcess(configDir),
   ]);
+
   assert.equal(results.filter((result) => result.migrated).length, 1);
   assert.equal(results.filter((result) => !result.migrated).length, 1);
   assert.equal(existsSync(join(configDir, "config.json")), false);
@@ -139,6 +140,7 @@ function withConfigDir(
 ): void {
   const configDir = mkdtempSync(join(tmpdir(), "devspace-user-config-test-"));
   const env = { DEVSPACE_CONFIG_DIR: configDir };
+
   try {
     test(configDir, env);
   } finally {
@@ -150,6 +152,7 @@ async function withConfigDirAsync(
   test: (configDir: string) => Promise<void>,
 ): Promise<void> {
   const configDir = mkdtempSync(join(tmpdir(), "devspace-user-config-test-"));
+
   try {
     await test(configDir);
   } finally {
@@ -161,6 +164,7 @@ async function migrateInChildProcess(
   configDir: string,
 ): Promise<{ migrated: boolean }> {
   const moduleUrl = new URL("./user-config.ts", import.meta.url).href;
+
   const source = [
     `import { loadDevspaceFiles } from ${JSON.stringify(moduleUrl)};`,
     "const files = loadDevspaceFiles();",
@@ -176,6 +180,7 @@ async function migrateInChildProcess(
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
@@ -188,8 +193,10 @@ async function migrateInChildProcess(
     child.once("close", (code) => {
       if (code !== 0) {
         reject(new Error(`migration child exited with ${code}: ${stderr}`));
+
         return;
       }
+
       resolve(JSON.parse(stdout) as { migrated: boolean });
     });
   });

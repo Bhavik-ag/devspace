@@ -43,12 +43,15 @@ export function createLocalAgentDrivers(
   options: LocalAgentDriverOptions = {},
 ): LocalAgentDriver[] {
   const env = options.env ?? process.env;
+
   const providerEnv = (provider: LocalAgentProvider) => options.subagents
     ? localAgentProviderEnvironment(options.subagents, provider, env)
     : env;
+
   const providerEnvOverrides = (provider: LocalAgentProvider) => options.subagents
     ? localAgentProviderEnvironmentOverrides(options.subagents, provider)
     : {};
+
   return [
     new CodexLocalAgentDriver(providerEnv("codex")),
     new ClaudeLocalAgentDriver(options.claudeQueryFactory, providerEnv("claude")),

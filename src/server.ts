@@ -102,6 +102,7 @@ class ToolActivityTracker {
     this.active.add(promise);
     const remove = () => this.active.delete(promise);
     void promise.then(remove, remove);
+
     return promise;
   };
 
@@ -128,11 +129,14 @@ function serverInstructions(
     config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
       ? " When the user provides an attached or generated file that needs to be added to the workspace, pass the provided file directly to download_artifact with the existing workspace_id and a suitable relative destination path. Do not reconstruct attached files manually."
       : "";
+
   const showChangesInstruction =
     " If files are modified, call show_changes once after the final related change and before the final response.";
+
   const skills = config.skillsEnabled
     ? `When ${toolNames.openWorkspace} returns available skills and a task matches one, use ${toolNames.read} with the returned skill path before proceeding. `
     : "";
+
   const agents = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in available_agents_files, use ${toolNames.read} to inspect that instruction file and follow it. `;
   const common = `Call ${toolNames.openWorkspace} when starting work in a project folder or isolated worktree without a usable workspace_id, then reuse the returned workspace_id for subsequent operations in that workspace.`;
 
@@ -147,6 +151,7 @@ function formatVisibleAgent(agent: {
 }): string {
   const model = agent.model ? `, model ${agent.model}` : "";
   const effort = agent.effort ? `, effort ${agent.effort}` : "";
+
   return `${agent.name} (${agent.provider}${model}${effort})`;
 }
 
@@ -161,6 +166,7 @@ function formatAvailableAgentProvider(provider: {
     provider.effort ? `effort ${provider.effort}` : undefined,
     provider.note,
   ].filter(Boolean).join(", ");
+
   return `${provider.id}${details ? ` (${details})` : ""}`;
 }
 
@@ -248,6 +254,7 @@ function assetUrl(baseUrl: string, assetPath: string): string {
 function workspaceAppHtml(config: ServerConfig): string {
   const baseUrl = assetBaseUrl(config);
   const entry = getWorkspaceAppManifestEntry();
+
   const stylesheets = (entry.css ?? [])
     .map(
       (stylesheet) =>
@@ -277,6 +284,7 @@ function appCsp(config: ServerConfig): {
   connectDomains: string[];
 } {
   const publicBaseUrl = config.publicBaseUrl.replace(/\/+$/, "");
+
   return {
     resourceDomains: [publicBaseUrl],
     connectDomains: [publicBaseUrl],
@@ -296,6 +304,7 @@ function setAssetHeaders(res: Response): void {
 
 async function assertWorkspaceAppAssets(): Promise<void> {
   const entry = getWorkspaceAppManifestEntry();
+
   const candidates = [entry.file, ...(entry.css ?? [])].map(
     (assetPath) => new URL(`../dist/ui/${assetPath}`, import.meta.url),
   );
@@ -315,6 +324,7 @@ export function createMcpServer(
   trackToolActivity?: TrackToolActivity,
 ): McpServer {
   const toolSurface = getToolSurface(config.toolMode);
+
   const server = new McpServer(
     mcpServerInfo(),
     {
@@ -332,6 +342,7 @@ export function createMcpServer(
     incomingArtifactAdapters,
     trackToolActivity,
   );
+
   return server;
 }
 
@@ -348,6 +359,7 @@ function registerMcpSurface(
   const registrationTarget = trackToolActivity
     ? withTrackedToolHandlers(server, trackToolActivity)
     : server;
+
   const toolSurface = getToolSurface(config.toolMode);
 
   registerAppResource(
@@ -364,6 +376,7 @@ function registerMcpSurface(
     },
     async () => {
       await assertWorkspaceAppAssets();
+
       return {
         contents: [
           {
@@ -441,6 +454,7 @@ function registerMcpSurface(
     async ({ path, mode, base_ref }, { _meta }) => {
       const startedAt = performance.now();
       const baseRef = base_ref;
+
       const {
         workspace,
         agentsFiles,
@@ -451,16 +465,21 @@ function registerMcpSurface(
         { path, mode, baseRef },
         { conversationScopeId: conversationScopeIdFromRequestMeta(_meta) },
       );
+
       const review = await reviewCheckpoints.initializeWorkspace({
         workspaceId: workspace.id,
         root: workspace.root,
       });
+
       const preloadSubagents = config.subagents.enabled
         && config.subagents.instructions === "preload";
+
       const subagentsSkill = workspace.skills.find((skill) => skill.name === "subagents");
+
       const preloadedSubagentInstructions = preloadSubagents && subagentsSkill
         ? readFileSync(subagentsSkill.filePath, "utf8")
         : undefined;
+
       const cardSkills = workspace.skills
         .filter((skill) => !skill.disableModelInvocation)
         .filter((skill) => !(preloadSubagents && skill.name === "subagents"))
@@ -469,11 +488,13 @@ function registerMcpSurface(
           description: skill.description,
           path: formatPathForPrompt(skill.filePath),
         }));
+
       const agentCatalog = buildLocalAgentCatalog(
         config.subagents,
         workspace.agentProfiles,
         resolveLocalAgentProviders(),
       );
+
       const cardAgentProviders = agentCatalog.providers
         .filter((provider) => provider.usable)
         .map((provider) => ({
@@ -482,22 +503,28 @@ function registerMcpSurface(
           effort: provider.effort,
           note: provider.note,
         }));
+
       const cardAgents = agentCatalog.profiles;
+
       const cardAgentsFiles = agentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
         content: file.content,
       }));
+
       const cardAvailableAgentsFiles = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
+
       const visibleSkills = includeBootstrapContext ? cardSkills : [];
       const visibleAgentProviders = includeBootstrapContext ? cardAgentProviders : [];
       const visibleAgents = includeBootstrapContext ? cardAgents : [];
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
+
       const cardInstruction = config.skillsEnabled
         ? "Use this workspace_id for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agents_files instructions. Before working under a path listed in available_agents_files, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
         : "Use this workspace_id for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agents_files instructions. Before working under a path listed in available_agents_files, read that instruction file.";
+
       const workspaceInstruction = workspaceReused
         ? [
             `Workspace already open as ${workspace.id}.`,
@@ -507,6 +534,7 @@ function registerMcpSurface(
         : workspace.mode === "worktree"
           ? "Use this workspace_id for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, agent profiles, and diagnostics returned for it."
           : cardInstruction;
+
       const instruction = preloadedSubagentInstructions && includeBootstrapContext
         ? [
             workspaceInstruction,
@@ -514,6 +542,7 @@ function registerMcpSurface(
             preloadedSubagentInstructions,
           ].join("\n\n")
         : workspaceInstruction;
+
       const resultContent: ToolContent[] = [
         {
           type: "text" as const,
@@ -544,6 +573,7 @@ function registerMcpSurface(
           ].filter(Boolean).join("\n"),
         },
       ];
+
       logToolCall(config, {
         tool: "open_workspace",
         workspaceId: workspace.id,
@@ -659,6 +689,7 @@ function registerMcpSurface(
       const workspaceId = workspace_id;
       const workspace = await workspaces.getWorkspace(workspaceId);
       const readPath = workspaces.resolveReadPath(workspace, input.path);
+
       const response = await readFileTool(
         { ...input, path: readPath.absolutePath },
         {
@@ -674,6 +705,7 @@ function registerMcpSurface(
           workspaceId,
           path: input.path,
         }, response.content, startedAt);
+
         return response;
       }
 
@@ -722,9 +754,11 @@ function registerMcpSurface(
       const startedAt = performance.now();
       const workspaceId = workspace_id;
       const workspace = await workspaces.getWorkspace(workspaceId);
+
       const reviewRef = typeof _meta?.["devspace/reviewRef"] === "string"
         ? _meta["devspace/reviewRef"]
         : undefined;
+
       const review = reviewRef
         ? await reviewCheckpoints.reviewByRef({
             workspaceId,
@@ -782,6 +816,7 @@ function withTrackedToolHandlers(
   return {
     registerTool: ((...args: unknown[]) => {
       const handler = args.at(-1) as (...handlerArgs: unknown[]) => unknown;
+
       return (server.registerTool as (...callArgs: unknown[]) => unknown)(
         ...args.slice(0, -1),
         (...handlerArgs: unknown[]) => trackToolActivity(
@@ -803,35 +838,44 @@ export function createServer(
 ): RunningServer {
   const incomingArtifactAdapters = options.incomingArtifactAdapters
     ?? [createOpenAIIncomingArtifactAdapter()];
+
   const allowedHosts = config.allowedHosts.includes("*")
     ? undefined
     : Array.from(new Set([config.host, ...config.allowedHosts]));
+
   const app = createMcpExpressApp({
     host: config.host,
     ...(allowedHosts ? { allowedHosts } : {}),
   });
+
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
+
   const bearerAuth = requireBearerAuth({
     verifier: oauthProvider,
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
+
   const workspaceStore = createWorkspaceStore(config.stateDir);
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
   const toolActivities = new ToolActivityTracker();
+
   const localAgentProviders = buildLocalAgentProviderStatuses(
     config.subagents,
     getLocalAgentProviderAvailabilitySnapshot(process.env, config.subagents),
   );
+
   const resolveLocalAgentProviders = () => buildLocalAgentProviderStatuses(
     config.subagents,
     getLocalAgentProviderAvailabilitySnapshot(process.env, config.subagents),
   );
+
   const modernToolSurface = getToolSurface(config.toolMode);
+
   const bindModernMcpSurface = compileMcpRegistrationSurface((target) => {
     registerMcpSurface(
       target,
@@ -844,23 +888,28 @@ export function createServer(
       toolActivities.track,
     );
   });
+
   const logMcpHandlerError = (error: Error) => logEvent(
     config.logging,
     "error",
     "mcp_handler_error",
     modernMcpAdapterErrorLogFields(error),
   );
+
   const mcpHandler = createMcpHandler(() => {
     const adapter = createModernMcpServerAdapter(
       mcpServerInfo(),
       { instructions: serverInstructions(config, modernToolSurface) },
     );
+
     bindModernMcpSurface(adapter.registrationTarget);
+
     return adapter.server;
   }, {
     legacy: "stateless",
     onerror: logMcpHandlerError,
   });
+
   const mcpNodeHandler = toNodeHandler(mcpHandler, {
     onerror: logMcpHandlerError,
   });
@@ -876,7 +925,9 @@ export function createServer(
 
     res.on("finish", () => {
       const path = requestPath(req);
+
       if (!config.logging.requests) return;
+
       if (!config.logging.assets && path.startsWith("/mcp-app-assets")) return;
 
       logEvent(config.logging, "info", "http_request", {
@@ -931,6 +982,7 @@ export function createServer(
         else resolve();
       });
     });
+
     if (res.headersSent) return;
 
     if (!req.auth?.resource || !oauthProvider.isResourceAllowed(req.auth.resource)) {
@@ -942,6 +994,7 @@ export function createServer(
         ...requestLogFields(req, config),
       });
       sendJsonRpcError(res, 401, -32001, "Unauthorized");
+
       return;
     }
 
@@ -957,6 +1010,7 @@ export function createServer(
         requestId,
         error: error instanceof Error ? error.message : String(error),
       });
+
       if (!res.headersSent) {
         sendJsonRpcError(res, 500, -32603, "Internal server error");
       }
@@ -964,6 +1018,7 @@ export function createServer(
   });
 
   let closePromise: Promise<void> | undefined;
+
   return {
     app,
     config,
@@ -977,11 +1032,13 @@ export function createServer(
             error: error instanceof Error ? error.message : String(error),
           });
         }
+
         await toolActivities.waitForIdle();
         processSessions.shutdown();
         oauthProvider.close();
         workspaceStore.close?.();
       })();
+
       return closePromise;
     },
   };
@@ -992,11 +1049,13 @@ async function isMainModule(): Promise<boolean> {
 
   const modulePath = await realpath(fileURLToPath(import.meta.url));
   const entrypointPath = await realpath(process.argv[1]);
+
   return modulePath === entrypointPath;
 }
 
 if (await isMainModule()) {
   const { app, config, close, localAgentProviders } = createServer();
+
   const httpServer = app.listen(config.port, config.host, () => {
     console.log(
       `devspace listening on http://${config.host}:${config.port}/mcp`,
@@ -1007,28 +1066,33 @@ if (await isMainModule()) {
     console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
     console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
+
     const artifactDownloadStatus = !config.artifactsEnabled
       ? "disabled"
       : isArtifactDownloadSupportedPlatform()
         ? "enabled"
         : `unsupported on ${process.platform}`;
+
     console.log(`native artifact download: ${artifactDownloadStatus}`);
     console.log(`subagent providers: ${formatLocalAgentProviderStatusSummary(localAgentProviders)}`);
   });
 
   let shuttingDown = false;
+
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
     await shutdownHttpServer(httpServer, close);
     process.exit(0);
   };
+
   const handleShutdown = () => {
     void shutdown().catch((error) => {
       console.error("devspace shutdown failed", error);
       process.exit(1);
     });
   };
+
   process.once("SIGINT", handleShutdown);
   process.once("SIGTERM", handleShutdown);
 }

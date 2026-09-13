@@ -13,6 +13,7 @@ import {
 import { resolveAllowedPath } from "./roots.js";
 
 type McpContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+
 export type ToolResponse<TDetails = unknown> = {
   content: McpContent[];
   details?: TDetails;
@@ -41,6 +42,7 @@ function toMcpContent(result: AgentToolResult<unknown>): McpContent[] {
 
 function formatToolError(error: unknown): McpContent[] {
   const message = error instanceof Error ? error.message : String(error);
+
   return [{ type: "text", text: message }];
 }
 
@@ -51,6 +53,7 @@ async function runTool<TInput, TDetails = unknown>(
 ): Promise<ToolResponse<TDetails>> {
   try {
     const result = await execute(input);
+
     return {
       content: toMcpContent(result),
       details: result.details,

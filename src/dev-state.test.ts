@@ -8,10 +8,15 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-dev-state-test-"));
+
 const checkoutRoot = join(root, "checkout");
+
 const sourceConfigDir = join(root, "config");
+
 const sourceStateDir = join(root, "state");
+
 const scriptPath = fileURLToPath(new URL("../scripts/dev-state.ts", import.meta.url));
+
 const tsxCliPath = fileURLToPath(import.meta.resolve("tsx/cli"));
 
 try {
@@ -34,9 +39,11 @@ try {
   await runDevState("seed");
 
   const devRoot = join(checkoutRoot, ".devspace-dev");
+
   const localConfig = JSON.parse(
     await readFile(join(devRoot, "config", "config.jsonc"), "utf8"),
   ) as { storage: { stateDir: string } };
+
   assert.equal(
     await realpath(localConfig.storage.stateDir),
     await realpath(join(devRoot, "state")),
@@ -56,6 +63,7 @@ try {
   await assert.rejects(runDevState("reset"), /No auth\.json found/);
 
   const preservedDatabase = new Database(localDatabasePath, { readonly: true });
+
   try {
     assert.deepEqual(
       preservedDatabase.prepare("select value from marker order by rowid").pluck().all(),
@@ -94,6 +102,7 @@ async function runDevState(command: "seed" | "reset"): Promise<void> {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+
     let stderr = "";
     child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
       stderr += chunk;
