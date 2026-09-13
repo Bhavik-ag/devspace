@@ -1,6 +1,5 @@
 import {
   isLocalAgentProvider,
-  LOCAL_AGENT_PROVIDERS,
   type LocalAgentProfile,
   type LocalAgentProvider,
 } from "./local-agent-profiles.js";
