@@ -1,4 +1,5 @@
 import { AgentProviderProtocolError } from "./local-agent-errors.js";
+import { z } from "zod";
 
 export const GROK_DEFAULT_MODEL = "grok-build";
 
@@ -31,11 +32,36 @@ export interface GrokPromptCompletion {
   stopReason?: string;
 }
 
+type GrokJsonValue = string | number | boolean | null | GrokJsonValue[] | GrokRecord;
+
+type GrokRecord = { readonly [key: string]: GrokJsonValue };
+
+type GrokProtocolInputValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly GrokProtocolInputValue[]
+  | GrokProtocolInput;
+
+export interface GrokProtocolInput {
+  readonly [key: string]: GrokProtocolInputValue;
+}
+
+const grokJsonValueSchema: z.ZodType<GrokJsonValue> = z.lazy(() =>
+  z.union([z.string(), z.number(), z.boolean(), z.null(), z.array(grokJsonValueSchema), z.record(z.string(), grokJsonValueSchema)]),
+);
+
+const grokProtocolPayloadSchema = z.record(z.string(), grokJsonValueSchema);
+
+type GrokRejection = Error;
+
 interface PendingPromptCompletion {
   sessionId: string;
   promptId: string;
   resolve: (completion: GrokPromptCompletion) => void;
-  reject: (error: unknown) => void;
+  reject: (error: GrokRejection) => void;
   timer: NodeJS.Timeout;
 }
 
@@ -95,7 +121,7 @@ export class GrokPromptCompletionRegistry {
     clearTimeout(pending.timer);
   }
 
-  rejectAll(error: unknown): void {
+  rejectAll(error: GrokRejection): void {
     const pending = Array.from(this.pending.values());
     this.pending.clear();
 
@@ -131,8 +157,11 @@ export class GrokPromptCompletionRegistry {
   }
 }
 
-export function parseGrokPromptCompletion(input: unknown): GrokPromptCompletion | undefined {
-  const record = asRecord(input);
+export function parseGrokPromptCompletion(input: GrokProtocolInput): GrokPromptCompletion | undefined {
+  const record = parseGrokProtocolPayload(input);
+
+  if (!record) return undefined;
+
   const sessionId = directString(record?.sessionId);
 
   if (!sessionId) return undefined;
@@ -153,17 +182,24 @@ export function parseGrokPromptCompletion(input: unknown): GrokPromptCompletion 
 
   if (promptId && isBackgroundPromptId(promptId)) return undefined;
 
-  return {
+  const completion: GrokPromptCompletion = {
     sessionId,
-    ...(promptId ? { promptId } : {}),
-    ...((firstString(record?.stopReason, update?.stopReason))
-      ? { stopReason: firstString(record?.stopReason, update?.stopReason) }
-      : {}),
   };
+
+  if (promptId) completion.promptId = promptId;
+
+  const stopReason = firstString(record.stopReason, update?.stopReason);
+
+  if (stopReason) completion.stopReason = stopReason;
+
+  return completion;
 }
 
-export function readGrokSessionState(value: unknown): GrokSessionState | undefined {
-  const record = asRecord(value);
+export function readGrokSessionState(value: GrokProtocolInput | null): GrokSessionState | undefined {
+  const record = parseGrokProtocolPayload(value);
+
+  if (!record) return undefined;
+
   const response = asRecord(record?.newSessionResponse) ?? record;
 
   const models = asRecord(response?.models)
@@ -243,10 +279,10 @@ function grokConfigurationError(message: string): AgentProviderProtocolError {
 }
 
 export function isGrokReasoningEffort(value: string): value is GrokReasoningEffort {
-  return (GROK_REASONING_EFFORTS as readonly string[]).includes(value);
+  return GROK_REASONING_EFFORTS.some((effort) => effort === value);
 }
 
-function readGrokModelInfo(value: unknown): GrokModelInfo | undefined {
+function readGrokModelInfo(value: GrokJsonValue): GrokModelInfo | undefined {
   const record = asRecord(value);
   const id = directString(record?.modelId) ?? directString(record?.id);
 
@@ -282,7 +318,7 @@ function isBackgroundPromptId(promptId: string): boolean {
     || /^task-completed-/i.test(promptId);
 }
 
-function firstString(...values: unknown[]): string | undefined {
+function firstString(...values: (GrokJsonValue | undefined)[]): string | undefined {
   for (const value of values) {
     const result = directString(value);
 
@@ -292,16 +328,26 @@ function firstString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function readArray(value: unknown): unknown[] | undefined {
+function readArray(value: GrokJsonValue | undefined): GrokJsonValue[] | undefined {
   return Array.isArray(value) ? value : undefined;
 }
 
-function directString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function directString(value: GrokJsonValue | undefined): string | undefined {
+  const result = z.string().safeParse(value);
+
+  return result.success && result.data.trim() ? result.data.trim() : undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
+function asRecord(value: GrokJsonValue | undefined): GrokRecord | undefined {
+  return isGrokRecord(value) ? value : undefined;
+}
+
+function isGrokRecord(value: GrokJsonValue | undefined): value is GrokRecord {
+  return grokProtocolPayloadSchema.safeParse(value).success;
+}
+
+function parseGrokProtocolPayload(input: GrokProtocolInput | null): GrokRecord | undefined {
+  const parsed = grokProtocolPayloadSchema.safeParse(input);
+
+  return parsed.success ? parsed.data : undefined;
 }

@@ -28,6 +28,8 @@ const sessionResponse = {
 
 const state = readGrokSessionState(sessionResponse);
 
+assert.equal(readGrokSessionState(null), undefined);
+
 assert.deepEqual(state, {
   currentModelId: "grok-4.5",
   availableModels: [{ id: "grok-4.5", reasoningEfforts: ["high", "low"] }],
@@ -73,6 +75,8 @@ for (const incomplete of [
 ]) {
   assert.equal(parseGrokPromptCompletion(incomplete), undefined);
 }
+
+assert.equal(parseGrokPromptCompletion({ sessionId: 42 }), undefined);
 
 const registry = new GrokPromptCompletionRegistry();
 
