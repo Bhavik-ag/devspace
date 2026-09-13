@@ -43,20 +43,34 @@ function processResult(snapshot: ProcessSnapshot): string {
     : snapshot.signal
       ? `Process exited after signal ${snapshot.signal}.`
       : `Process exited with code ${snapshot.exitCode ?? "unknown"}.`;
-  return snapshot.output
-    ? `${snapshot.output.replace(/\n$/, "")}\n${status}`
-    : status;
+  return [
+    `Wall time: ${snapshot.wallTimeSeconds.toFixed(4)} seconds`,
+    status,
+    snapshot.originalTokenCount !== undefined
+      ? `Original token count: ${snapshot.originalTokenCount}`
+      : undefined,
+    "Output:",
+    snapshot.output.replace(/\n$/, ""),
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 function processOutputSchema(): z.ZodRawShape {
-  return resultOutputSchema({
+  return {
+    output: z.string().describe("Command output text, with truncation noted inline when needed."),
+    wall_time_seconds: z
+      .number()
+      .nonnegative()
+      .describe("Elapsed wall time spent on this tool call in seconds."),
     session_id: z.number().optional(),
-    running: z.boolean(),
     exit_code: z.number().int().optional(),
     signal: z.string().optional(),
-    wall_time_ms: z.number().nonnegative(),
-    output_truncated: z.boolean(),
-  });
+    original_token_count: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe("Approximate original token count when output was truncated."),
+  };
 }
 
 function processToolResponse(snapshot: ProcessSnapshot) {
@@ -65,13 +79,14 @@ function processToolResponse(snapshot: ProcessSnapshot) {
   return {
     content,
     structuredContent: {
-      result,
-      session_id: snapshot.sessionId,
-      running: snapshot.running,
-      exit_code: snapshot.exitCode,
-      signal: snapshot.signal,
-      wall_time_ms: snapshot.wallTimeMs,
-      output_truncated: snapshot.outputTruncated,
+      output: snapshot.output,
+      wall_time_seconds: snapshot.wallTimeSeconds,
+      ...(snapshot.sessionId !== undefined ? { session_id: snapshot.sessionId } : {}),
+      ...(snapshot.exitCode !== undefined ? { exit_code: snapshot.exitCode } : {}),
+      ...(snapshot.signal !== undefined ? { signal: snapshot.signal } : {}),
+      ...(snapshot.originalTokenCount !== undefined
+        ? { original_token_count: snapshot.originalTokenCount }
+        : {}),
     },
   };
 }

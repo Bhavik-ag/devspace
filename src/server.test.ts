@@ -113,7 +113,47 @@ test("Codex process tools keep model-facing inputs minimal", async (t) => {
       workdir: "nested",
     },
   }));
-  assert.match(result.result as string, /nested/i);
+  assert.match(result.output as string, /nested/i);
+});
+
+test("Codex process results expose only actionable process state", async (t) => {
+  const context = await fixture(t, { toolMode: "codex", uiEnabled: false });
+  const tools = await context.client.listTools();
+  const execTool = tools.tools.find(({ name }) => name === "exec_command");
+  const outputProperties = execTool?.outputSchema?.properties ?? {};
+
+  assert.ok("output" in outputProperties);
+  assert.ok("wall_time_seconds" in outputProperties);
+  assert.ok("session_id" in outputProperties);
+  assert.ok("exit_code" in outputProperties);
+  assert.ok("signal" in outputProperties);
+  assert.ok("original_token_count" in outputProperties);
+  assert.equal("result" in outputProperties, false);
+  assert.equal("running" in outputProperties, false);
+  assert.equal("wall_time_ms" in outputProperties, false);
+  assert.equal("output_truncated" in outputProperties, false);
+
+  const workspaceId = structuredContent(
+    await callOpen(context.client, context.project, "codex-output"),
+  ).workspace_id;
+  assert.equal(typeof workspaceId, "string");
+
+  const response = await context.client.callTool({
+    name: "exec_command",
+    arguments: {
+      workspace_id: workspaceId,
+      cmd: "printf hello",
+    },
+  });
+  const result = structuredContent(response);
+  assert.equal(result.output, "hello");
+  assert.equal(result.exit_code, 0);
+  assert.equal(typeof result.wall_time_seconds, "number");
+  assert.equal("session_id" in result, false);
+  assert.equal("running" in result, false);
+  assert.equal("output_truncated" in result, false);
+  const content = response.content as Array<{ type: string; text?: string }> | undefined;
+  assert.match(content?.find((block) => block.type === "text")?.text ?? "", /Output:\nhello/);
 });
 
 test("Claude edit and bash tools accept snake_case runtime inputs", async (t) => {
