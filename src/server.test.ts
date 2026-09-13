@@ -109,7 +109,7 @@ test("Codex process tools keep model-facing inputs minimal", async (t) => {
     name: "exec_command",
     arguments: {
       workspace_id: workspaceId,
-      cmd: "pwd",
+      cmd: `${JSON.stringify(process.execPath)} -e "process.stdout.write(process.cwd())"`,
       workdir: "nested",
     },
   }));
@@ -479,7 +479,7 @@ test("open_workspace preloads subagent instructions when configured", async (t) 
   });
 
   const opened = structuredContent(await callOpen(context.client, context.project, "chat-1"));
-  const skills = opened.skills as Array<Record<string, unknown>>;
+  const skills = (opened.skills ?? []) as Array<Record<string, unknown>>;
   assert.equal(skills.some((skill) => skill.name === "subagents"), false);
   assert.match(String(opened.instruction), /# DevSpace subagents/);
 });
