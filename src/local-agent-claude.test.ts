@@ -3,28 +3,30 @@ import {
   ClaudeLocalAgentDriver,
   claudeAuthoritySettings,
   type ClaudeQueryLike,
+  type ClaudeQueryMessage,
   type ClaudeUserMessage,
 } from "./local-agent-claude.js";
 import { createLocalAgentDrivers } from "./local-agent-adapters.js";
 import { subagentsConfigSchema } from "./local-agent-config.js";
 import type { LocalAgentRuntimeContext } from "./local-agent-runtime.js";
+import type { Options, Settings } from "@anthropic-ai/claude-agent-sdk";
 
-class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<unknown> {
+class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<ClaudeQueryMessage> {
   private readonly iterator: AsyncIterator<ClaudeUserMessage>;
   closeCount = 0;
   model?: string;
   permissionModes: string[] = [];
-  flagSettings: Array<Record<string, unknown>> = [];
+  flagSettings: Settings[] = [];
 
   constructor(prompt: AsyncIterable<ClaudeUserMessage>) {
     this.iterator = prompt[Symbol.asyncIterator]();
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<unknown> {
+  [Symbol.asyncIterator](): AsyncIterator<ClaudeQueryMessage> {
     return this;
   }
 
-  async next(): Promise<IteratorResult<unknown>> {
+  async next(): Promise<IteratorResult<ClaudeQueryMessage>> {
     const next = await this.iterator.next();
 
     if (next.done) return { done: true, value: undefined };
@@ -47,7 +49,7 @@ class FakeClaudeQuery implements ClaudeQueryLike, AsyncIterator<unknown> {
     this.permissionModes.push(mode);
   }
 
-  async applyFlagSettings(settings: Record<string, unknown>): Promise<void> {
+  async applyFlagSettings(settings: Settings): Promise<void> {
     this.flagSettings.push({ ...settings });
   }
 
@@ -67,7 +69,7 @@ const context: LocalAgentRuntimeContext = {
 
 let factoryCalls = 0;
 
-let lastOptions: Record<string, unknown> | undefined;
+let lastOptions: Options | undefined;
 
 let query: FakeClaudeQuery | undefined;
 
@@ -159,7 +161,9 @@ assert.deepEqual(lastOptions?.allowedTools, ["Read(/**)", "Edit(/**)", "Bash"]);
 
 assert.equal(lastOptions?.pathToClaudeCodeExecutable, undefined);
 
-const initialSandbox = lastOptions?.sandbox as Record<string, unknown>;
+assert.ok(lastOptions?.sandbox);
+
+const initialSandbox = lastOptions.sandbox;
 
 assert.equal(initialSandbox.enabled, true);
 
@@ -169,39 +173,33 @@ assert.equal(initialSandbox.autoAllowBashIfSandboxed, true);
 
 assert.equal(initialSandbox.allowUnsandboxedCommands, false);
 
-assert.deepEqual((initialSandbox.filesystem as Record<string, unknown>).allowWrite, []);
+assert.deepEqual(initialSandbox.filesystem?.allowWrite, []);
 
-assert.deepEqual((initialSandbox.filesystem as Record<string, unknown>).denyWrite, ["/tmp/project"]);
+assert.deepEqual(initialSandbox.filesystem?.denyWrite, ["/tmp/project"]);
 
 const allowedSettings = claudeAuthoritySettings("/tmp/project", "allowed");
 
-const allowedPermissions = allowedSettings.permissions as Record<string, unknown>;
+assert.deepEqual(allowedSettings.permissions?.deny, []);
 
-const allowedSandbox = allowedSettings.sandbox as Record<string, unknown>;
-
-assert.deepEqual(allowedPermissions.deny, []);
-
-assert.deepEqual(allowedSandbox.filesystem, {
+assert.deepEqual(allowedSettings.sandbox?.filesystem, {
   allowWrite: ["/tmp/project"],
   denyWrite: [],
 });
 
 const readOnlySettings = claudeAuthoritySettings("/tmp/project", "read_only");
 
-const readOnlyPermissions = readOnlySettings.permissions as Record<string, unknown>;
+assert.ok(readOnlySettings.permissions?.deny?.includes("Bash"));
 
-assert.ok((readOnlyPermissions.deny as string[]).includes("Bash"));
-
-assert.ok((readOnlyPermissions.deny as string[]).includes("Edit"));
+assert.ok(readOnlySettings.permissions?.deny?.includes("Edit"));
 
 assert.deepEqual(
-  ((readOnlySettings.sandbox as Record<string, unknown>).filesystem as Record<string, unknown>).allowWrite,
+  readOnlySettings.sandbox?.filesystem?.allowWrite,
   [],
 );
 
 const fullSettings = claudeAuthoritySettings("/tmp/project", "full_access");
 
-assert.deepEqual((fullSettings.sandbox as Record<string, unknown>), {
+assert.deepEqual(fullSettings.sandbox, {
   enabled: false,
   allowUnsandboxedCommands: true,
 });
@@ -212,24 +210,26 @@ assert.deepEqual(query?.permissionModes, ["dontAsk", "dontAsk", "bypassPermissio
 
 assert.equal(query?.flagSettings.length, 3);
 
-assert.equal(query?.flagSettings[0]?.alwaysThinkingEnabled, true);
+assert.ok(query);
 
-assert.equal(query?.flagSettings[0]?.effortLevel, "high");
+assert.equal(query.flagSettings[0]?.alwaysThinkingEnabled, true);
+
+assert.equal(query.flagSettings[0]?.effortLevel, "high");
 
 assert.equal(
-  (query?.flagSettings[0]?.permissions as Record<string, unknown>).defaultMode,
+  query.flagSettings[0]?.permissions?.defaultMode,
   "dontAsk",
 );
 
-assert.equal(query?.flagSettings[1]?.effortLevel, "low");
+assert.equal(query.flagSettings[1]?.effortLevel, "low");
 
 assert.equal(
-  ((query?.flagSettings[1]?.permissions as Record<string, unknown>).deny as string[]).includes("Edit"),
+  query.flagSettings[1]?.permissions?.deny?.includes("Edit"),
   false,
 );
 
 assert.equal(
-  (query?.flagSettings[2]?.permissions as Record<string, unknown>).defaultMode,
+  query.flagSettings[2]?.permissions?.defaultMode,
   "bypassPermissions",
 );
 
@@ -313,7 +313,7 @@ await assert.rejects(
   "programmer defects must not be reclassified as provider failures",
 );
 
-let configuredOptions: Record<string, unknown> | undefined;
+let configuredOptions: Options | undefined;
 
 const configuredDriver = createLocalAgentDrivers({
   env: {
