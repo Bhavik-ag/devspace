@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { z } from "zod";
 import {
   daemonExecArgv,
   localAgentDaemonEnvironment,
@@ -27,6 +28,25 @@ const root = await mkdtemp(join(tmpdir(), "devspace-agentd-test-"));
 
 const CONFIG_REVISION = "test-provider-config";
 
+const rawDaemonRequestSchema = z.object({
+  requestId: z.string(),
+  protocolVersion: z.number(),
+  method: z.string(),
+});
+
+const rawDaemonResponseSchema = z.union([
+  z.object({ ok: z.literal(true) }),
+  z.object({
+    ok: z.literal(false),
+    error: z.object({
+      code: z.string().optional(),
+      retryable: z.boolean().optional(),
+    }),
+  }),
+]);
+
+type RawDaemonResponse = z.infer<typeof rawDaemonResponseSchema>;
+
 const record: LocalAgentRecord = {
   id: "agt_test",
   workspaceId: "ws_test",
@@ -37,6 +57,8 @@ const record: LocalAgentRecord = {
   createdAt: "now",
   updatedAt: "now",
 };
+
+const continuedRecord: LocalAgentRecord = { ...record, status: "running" };
 
 class FakeManager implements LocalAgentDaemonManager {
   activeTurnCount = 1;
@@ -73,7 +95,7 @@ class FakeManager implements LocalAgentDaemonManager {
     _overrides: RunOverrides | undefined,
     _scope: { workspaceId: string; workspaceRoot: string },
   ) {
-    return Result.ok({ ...record, status: "running" } as LocalAgentRecord);
+    return Result.ok(continuedRecord);
   }
 
   get(_id: string, _scope: { workspaceId: string; workspaceRoot: string }) {
@@ -84,7 +106,7 @@ class FakeManager implements LocalAgentDaemonManager {
     return Result.ok([record]);
   }
 
-  async wait(agentIds: readonly string[], _scope: unknown, _timeoutMs?: number, signal?: AbortSignal) {
+  async wait(agentIds: readonly string[], _scope: { workspaceId: string; workspaceRoot: string }, _timeoutMs?: number, signal?: AbortSignal) {
     this.waitStarted = true;
 
     if (this.blockWaitUntilAbort) {
@@ -470,11 +492,7 @@ const legacyServer = createNetServer((socket) => {
 
     if (newline === -1) return;
 
-    const request = JSON.parse(buffer.slice(0, newline)) as {
-      requestId: string;
-      protocolVersion: number;
-      method: string;
-    };
+    const request = rawDaemonRequestSchema.parse(JSON.parse(buffer.slice(0, newline)));
 
     legacyMethods.push(`${request.method}:${request.protocolVersion}`);
 
@@ -586,11 +604,7 @@ const replacementRaceServer = createNetServer((socket) => {
 
     if (newline === -1) return;
 
-    const request = JSON.parse(buffer.slice(0, newline)) as {
-      requestId: string;
-      protocolVersion: number;
-      method: string;
-    };
+    const request = rawDaemonRequestSchema.parse(JSON.parse(buffer.slice(0, newline)));
 
     if (request.protocolVersion !== replacementRaceProtocol) {
       socket.end(encodeLocalAgentDaemonResponse({
@@ -674,7 +688,7 @@ const timeoutServer = createNetServer((socket) => {
     const newline = buffer.indexOf("\n");
 
     if (newline === -1) return;
-    const request = JSON.parse(buffer.slice(0, newline)) as { requestId: string; method: string };
+    const request = rawDaemonRequestSchema.parse(JSON.parse(buffer.slice(0, newline)));
 
     if (request.method !== "hello") return;
     socket.end(encodeLocalAgentDaemonResponse({
@@ -899,7 +913,7 @@ async function sendRawRequest(
       if (newline === -1) return;
 
       try {
-        const parsed = JSON.parse(buffer.slice(0, newline)) as RawDaemonResponse;
+        const parsed = rawDaemonResponseSchema.parse(JSON.parse(buffer.slice(0, newline)));
         settle(() => resolveResponse(parsed));
       } catch (error) {
         settle(() => rejectResponse(error));
@@ -938,10 +952,6 @@ async function sendRawRequest(
     socket.destroy();
   }
 }
-
-type RawDaemonResponse =
-  | { ok: true }
-  | { ok: false; error: { code?: string; retryable?: boolean } };
 
 function onceSocket(
   socket: ReturnType<typeof createConnection>,
