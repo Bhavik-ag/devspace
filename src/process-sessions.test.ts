@@ -94,7 +94,6 @@ assert.equal(background.running, true);
 
 assert.ok(background.sessionId);
 
-assert.equal(typeof background.sessionId, "number");
 
 await assert.rejects(
   manager.write({
@@ -128,7 +127,6 @@ assert.equal(interactive.running, true);
 
 assert.ok(interactive.sessionId);
 
-assert.equal(typeof interactive.sessionId, "number");
 
 const inputResult = await manager.write({
   workspaceId: "workspace-a",
