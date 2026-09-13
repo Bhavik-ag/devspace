@@ -87,12 +87,13 @@ export function effectiveSkillPaths(config: ServerConfig, cwd: string): string[]
   const seen = new Set<string>();
 
   return [...defaultPaths, ...config.skillPaths]
-    .map((path) => resolveSkillPath(path, cwd))
-    .filter((path) => {
-      if (seen.has(path)) return false;
-      seen.add(path);
+    .flatMap((path) => {
+      const resolved = resolveSkillPath(path, cwd);
 
-      return true;
+      if (seen.has(resolved)) return [];
+      seen.add(resolved);
+
+      return [resolved];
     });
 }
 

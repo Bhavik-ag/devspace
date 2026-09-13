@@ -40,8 +40,8 @@ function toMcpContent(result: AgentToolResult<unknown>): McpContent[] {
   });
 }
 
-function formatToolError(error: unknown): McpContent[] {
-  const message = error instanceof Error ? error.message : String(error);
+function formatToolError(cause: unknown): McpContent[] {
+  const message = cause instanceof Error ? cause.message : String(cause);
 
   return [{ type: "text", text: message }];
 }
@@ -49,7 +49,7 @@ function formatToolError(error: unknown): McpContent[] {
 async function runTool<TInput, TDetails = unknown>(
   execute: (input: TInput) => Promise<AgentToolResult<TDetails>>,
   input: TInput,
-  context: ToolContext,
+  _context: ToolContext,
 ): Promise<ToolResponse<TDetails>> {
   try {
     const result = await execute(input);

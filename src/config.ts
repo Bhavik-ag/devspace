@@ -97,7 +97,13 @@ function normalizePath(path: string): string {
 function normalizeAllowedHosts(hosts: string[]): string[] {
   if (hosts.includes("*")) return ["*"];
 
-  return Array.from(new Set(hosts.map((host) => host.trim()).filter(Boolean)));
+  const normalized = hosts.flatMap((host) => {
+    const trimmed = host.trim();
+
+    return trimmed ? [trimmed] : [];
+  });
+
+  return Array.from(new Set(normalized));
 }
 
 function parseRequiredSecret(value: string | undefined): string {

@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { spawnSync } from "node:child_process";
+import { z } from "zod";
 
 export interface ShellCommand {
   executable: string;
@@ -73,8 +74,8 @@ export function terminateProcessTree(
       runtime.killGroup(child.pid, signal);
 
       return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    } catch (cause) {
+      if (z.object({ code: z.literal("ESRCH") }).safeParse(cause).success) return;
     }
   }
 

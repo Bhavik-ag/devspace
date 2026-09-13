@@ -382,10 +382,10 @@ function workspaceStoreResult<T>(
   }
 }
 
-function isProgrammerDefect(error: unknown): boolean {
-  return error instanceof TypeError
-    || error instanceof ReferenceError
-    || error instanceof SyntaxError
-    || error instanceof RangeError
-    || (error instanceof Error && error.name === "AssertionError");
+function isProgrammerDefect(cause: unknown): boolean {
+  return cause instanceof TypeError
+    || cause instanceof ReferenceError
+    || cause instanceof SyntaxError
+    || cause instanceof RangeError
+    || (cause instanceof Error && cause.name === "AssertionError");
 }

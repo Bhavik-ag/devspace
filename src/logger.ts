@@ -1,4 +1,5 @@
 import type { Request } from "express";
+import type { JSONType } from "zod";
 
 export type LogLevel = "silent" | "error" | "warn" | "info" | "debug";
 
@@ -14,7 +15,9 @@ export interface LoggingConfig {
   trustProxy: boolean;
 }
 
-type LogFields = Record<string, unknown>;
+type LogValue = JSONType | undefined;
+
+type LogFields = Record<string, LogValue>;
 
 const LEVEL_WEIGHT: Record<LogLevel, number> = {
   silent: 0,
@@ -95,8 +98,6 @@ function formatPretty(entry: LogFields): string {
   return rest ? `${ts} ${level} ${event} ${rest}` : `${ts} ${level} ${event}`;
 }
 
-function formatPrettyValue(value: unknown): string {
-  if (typeof value === "string") return JSON.stringify(value);
-
-  return JSON.stringify(value);
+function formatPrettyValue(value: LogValue): string {
+  return JSON.stringify(value) ?? "undefined";
 }

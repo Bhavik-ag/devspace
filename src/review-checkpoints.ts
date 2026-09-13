@@ -402,8 +402,10 @@ async function isKnownReviewCommit(gitRoot: string, reviewCommit: string): Promi
 
     if (!workspace || !kind) continue;
 
+    if (kind !== "open" && kind !== "baseline") continue;
+
     const history = histories.get(workspace) ?? {};
-    history[kind as "open" | "baseline"] = commit;
+    history[kind] = commit;
     histories.set(workspace, history);
   }
 
