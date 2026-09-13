@@ -10,6 +10,7 @@ import type {
 import { mkdir, opendir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
+import { z } from "zod";
 import type { ServerConfig } from "./config.js";
 import {
   createManagedWorktree,
@@ -90,11 +91,17 @@ export interface OpenWorkspaceOptions {
   conversationScopeId?: string;
 }
 
+const openWorkspaceInputSchema = z.object({
+  path: z.string(),
+  mode: z.enum(["checkout", "worktree"]).optional(),
+  baseRef: z.string().optional(),
+});
+
 type PathStats = Stats;
 
 type DirectoryOps = {
   stat: (path: string) => Promise<PathStats>;
-  mkdir: (path: string, options: { recursive: true }) => Promise<unknown>;
+  mkdir: (path: string, options: { recursive: true }) => Promise<string | undefined>;
 };
 
 const MAX_CACHED_WORKSPACES = 32;
@@ -116,7 +123,12 @@ export class WorkspaceRegistry {
     input: string | OpenWorkspaceInput,
     openOptions: OpenWorkspaceOptions = {},
   ): Promise<WorkspaceContext> {
-    const workspaceInput = typeof input === "string" ? { path: input } : input;
+    const parsedPath = z.string().safeParse(input);
+
+    const workspaceInput = parsedPath.success
+      ? { path: parsedPath.data }
+      : openWorkspaceInputSchema.parse(input);
+
     const conversationScopeId = openOptions.conversationScopeId;
 
     if (!conversationScopeId || !this.store) {
@@ -541,7 +553,7 @@ export class WorkspaceRegistry {
     if (!this.store) return;
 
     while (this.workspaces.size > MAX_CACHED_WORKSPACES) {
-      const oldestWorkspaceId = this.workspaces.keys().next().value as string | undefined;
+      const oldestWorkspaceId = this.workspaces.keys().next().value;
 
       if (!oldestWorkspaceId) break;
       this.workspaces.delete(oldestWorkspaceId);

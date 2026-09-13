@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
+import { z } from "zod";
+
+const localConfigSchema = z.object({ storage: z.object({ stateDir: z.string() }) });
 
 const root = await mkdtemp(join(tmpdir(), "devspace-dev-state-test-"));
 
@@ -40,9 +43,9 @@ try {
 
   const devRoot = join(checkoutRoot, ".devspace-dev");
 
-  const localConfig = JSON.parse(
+  const localConfig = localConfigSchema.parse(JSON.parse(
     await readFile(join(devRoot, "config", "config.jsonc"), "utf8"),
-  ) as { storage: { stateDir: string } };
+  ));
 
   assert.equal(
     await realpath(localConfig.storage.stateDir),

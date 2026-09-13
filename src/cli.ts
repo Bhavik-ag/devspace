@@ -6,6 +6,7 @@ import type { Result as BetterResult } from "better-result";
 import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
+import { z } from "zod";
 import { loadConfig } from "./config.js";
 import type { ServerConfig } from "./config.js";
 import { resolveCliWorkspaceContext } from "./cli-workspace.js";
@@ -56,6 +57,11 @@ import { readReviewRef } from "./review-checkpoints.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import { logEvent } from "./logger.js";
 import { pruneStaleManagedWorktrees } from "./worktree-prune.js";
+import { DEVSPACE_VERSION } from "./version.js";
+
+const onboardingDestinationSchema = z.array(z.enum(["chatgpt", "coding-agents"]));
+
+const localAgentProviderSchema = z.array(z.enum(["codex", "claude", "opencode", "pi", "cursor", "copilot", "grok"]));
 
 type Command =
   | "serve"
@@ -196,7 +202,8 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
     });
 
     if (prompts.isCancel(destinationAnswer)) throw new SetupCancelledError();
-    const usage = resolveOnboardingUsage(destinationAnswer as OnboardingDestination[]);
+    const destinations: OnboardingDestination[] = onboardingDestinationSchema.parse(destinationAnswer);
+    const usage = resolveOnboardingUsage(destinations);
     const useChatGpt = usesChatGpt(usage);
     const useCodingAgents = usesCodingAgents(usage);
 
@@ -277,7 +284,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
     });
 
     if (prompts.isCancel(providerAnswer)) throw new SetupCancelledError();
-    const selectedProviders = providerAnswer as LocalAgentProvider[];
+    const selectedProviders: LocalAgentProvider[] = localAgentProviderSchema.parse(providerAnswer);
 
     const subagents = updateOnboardingSubagentsConfig(
       currentSubagents,
@@ -765,7 +772,12 @@ async function runAgentsWait(args: string[], json: boolean): Promise<void> {
   printAgentXml(results.map(formatAgentObservation).join("\n"));
 }
 
-function parseAgentsWaitArgs(args: string[]): { ids: string[]; timeoutMs?: number } {
+interface AgentWaitOptions {
+  ids: string[];
+  timeoutMs?: number;
+}
+
+function parseAgentsWaitArgs(args: string[]): AgentWaitOptions {
   const ids: string[] = [];
   let timeoutMs: number | undefined;
 
@@ -791,7 +803,11 @@ function parseAgentsWaitArgs(args: string[]): { ids: string[]; timeoutMs?: numbe
     throw new Error("Usage: devspace agents wait <id>... [--timeout <seconds>] [--json]");
   }
 
-  return { ids, ...(timeoutMs === undefined ? {} : { timeoutMs }) };
+  const options: AgentWaitOptions = { ids };
+
+  if (timeoutMs !== undefined) options.timeoutMs = timeoutMs;
+
+  return options;
 }
 
 function parseAgentWaitTimeout(value: string | undefined): number {
@@ -852,7 +868,12 @@ async function runAgentsDaemon(args: string[], json: boolean): Promise<void> {
   }
 }
 
-function extractJsonOption(args: string[]): { args: string[]; json: boolean } {
+interface JsonOptionResult {
+  args: string[];
+  json: boolean;
+}
+
+function extractJsonOption(args: string[]): JsonOptionResult {
   const commandArgs: string[] = [];
   let json = false;
   let optionsEnded = false;
@@ -925,7 +946,7 @@ function printAgentXml(fragment: string): void {
   if (fragment) console.log(fragment);
 }
 
-function printJson(value: unknown): void {
+function printJson<T>(value: T): void {
   console.log(JSON.stringify(value));
 }
 
@@ -947,13 +968,7 @@ function printAgentsHelp(): void {
 }
 
 function printVersion(): void {
-  const packageJson = require("../package.json") as { version?: unknown };
-
-  if (typeof packageJson.version !== "string") {
-    throw new Error("Unable to read DevSpace package version.");
-  }
-
-  console.log(packageJson.version);
+  console.log(DEVSPACE_VERSION);
 }
 
 function normalizeOptionalPublicBaseUrl(value: string): string | null {
@@ -1036,7 +1051,7 @@ class SetupCancelledError extends Error {}
 
 function checkSqliteNative(): string {
   try {
-    const Database = require("better-sqlite3") as typeof import("better-sqlite3");
+    const Database: typeof import("better-sqlite3") = require("better-sqlite3");
     const db = new Database(":memory:");
     db.close();
 
@@ -1048,9 +1063,9 @@ function checkSqliteNative(): string {
 
 function checkGitAvailable(): string {
   try {
-    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    const childProcess: typeof import("node:child_process") = require("node:child_process");
 
-    return execFileSync("git", ["--version"], { encoding: "utf8" }).trim();
+    return childProcess.execFileSync("git", ["--version"], { encoding: "utf8" }).trim();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
 

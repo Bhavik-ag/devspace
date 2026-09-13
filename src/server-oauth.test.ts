@@ -5,6 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { SqliteOAuthStore } from "./oauth-store.js";
 import { createServer } from "./server.js";
@@ -54,8 +55,7 @@ test("HTTP MCP enforces canonical and exact alias bearer resources", async (t) =
     await rm(root, { recursive: true, force: true });
   });
   await once(listener, "listening");
-  const address = listener.address();
-  assert.ok(address && typeof address !== "string");
+  const address = z.object({ port: z.number() }).parse(listener.address());
 
   for (const { resource, accepted } of cases) {
     const response: Response = await fetch(`http://127.0.0.1:${address.port}/mcp`, {
