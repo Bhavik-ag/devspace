@@ -45,16 +45,10 @@ interface ParsedFrontmatter {
 
 const FRONTMATTER_DELIMITER = "---";
 
-const profileStringSchema = z.string();
-
-const optionalProfileStringSchema = z.preprocess(
-  (value) => {
-    const parsed = profileStringSchema.safeParse(value);
-
-    return parsed.success ? parsed.data.trim() || undefined : undefined;
-  },
-  profileStringSchema.optional(),
-);
+const optionalProfileStringSchema = z.string()
+  .trim()
+  .transform((value) => value || undefined)
+  .optional();
 
 const profileFrontmatterSchema = z.object({
   name: optionalProfileStringSchema,
@@ -62,7 +56,7 @@ const profileFrontmatterSchema = z.object({
   provider: optionalProfileStringSchema,
   model: optionalProfileStringSchema,
   effort: optionalProfileStringSchema,
-  disabled: z.preprocess((value) => value === true, z.boolean()),
+  disabled: z.boolean().default(false),
 }).strip();
 
 type ProfileFrontmatter = z.output<typeof profileFrontmatterSchema>;

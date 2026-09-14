@@ -57,6 +57,35 @@ try {
       "",
     ].join("\n"),
   );
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "invalid-disabled.md"),
+    [
+      "---",
+      "name: invalid-disabled",
+      "description: Invalid disabled type.",
+      "provider: codex",
+      'disabled: "true"',
+      "---",
+      "",
+      "Must not load.",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "invalid-model.md"),
+    [
+      "---",
+      "name: invalid-model",
+      "description: Invalid model type.",
+      "provider: codex",
+      "model:",
+      "  - gpt-5.4",
+      "---",
+      "",
+      "Must not load.",
+      "",
+    ].join("\n"),
+  );
 
   const enabledConfig = loadConfig(writeTestDevspaceConfig(configDir, {
     workspaces: { allowedRoots: [workspaceRoot] },
