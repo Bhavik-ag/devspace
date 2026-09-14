@@ -31,6 +31,7 @@ const fileSchema = z
   .object({
     path: optionalStringSchema,
     previousPath: optionalStringSchema,
+    previous_path: optionalStringSchema,
     type: optionalReviewFileTypeSchema,
     additions: optionalNumberSchema,
     removals: optionalNumberSchema,
@@ -417,7 +418,7 @@ function cardFields(record: ToolRecord | undefined): ParsedCard | undefined {
   const files = record.files?.flatMap((item) => item
     ? [{
         path: item.path,
-        previousPath: item.previousPath,
+        previousPath: item.previousPath ?? item.previous_path,
         type: item.type,
         additions: item.additions,
         removals: item.removals,

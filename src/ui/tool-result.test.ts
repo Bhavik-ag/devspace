@@ -125,7 +125,13 @@ test("older review results can reload from their structured patch", () => {
     structuredContent: {
       result: "Changed 1 file (+1 -0).",
       summary: { files: 1, additions: 1, removals: 0 },
-      files: [{ path: "new.txt", type: "new", additions: 1, removals: 0 }],
+      files: [{
+        path: "new.txt",
+        previous_path: "old.txt",
+        type: "rename-changed",
+        additions: 1,
+        removals: 0,
+      }],
       patch: "diff --git a/new.txt b/new.txt",
     },
   });
@@ -135,6 +141,7 @@ test("older review results can reload from their structured patch", () => {
   if (decoded.kind !== "card") return;
   assert.equal(decoded.card.tool, "show_changes");
   assert.equal(decoded.card.files?.[0]?.path, "new.txt");
+  assert.equal(decoded.card.files?.[0]?.previousPath, "old.txt");
   assert.equal(decoded.card.payload?.patch, "diff --git a/new.txt b/new.txt");
 });
 
