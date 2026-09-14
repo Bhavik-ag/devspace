@@ -92,17 +92,16 @@ if (conditionalStop.method !== "daemon.stop") throw new Error("expected daemon.s
 
 assert.equal(conditionalStop.params.ifIdle, true);
 
-const malformedOptionalStop = decodeLocalAgentDaemonRequest({
-  requestId: "req_stop_compat",
-  protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
-  authToken: "test-secret",
-  method: "daemon.stop",
-  params: { ifIdle: "true" },
-});
-
-if (malformedOptionalStop.method !== "daemon.stop") throw new Error("expected daemon.stop request");
-
-assert.equal(malformedOptionalStop.params.ifIdle, undefined);
+assert.throws(
+  () => decodeLocalAgentDaemonRequest({
+    requestId: "req_stop_invalid_if_idle",
+    protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
+    authToken: "test-secret",
+    method: "daemon.stop",
+    params: { ifIdle: "true" },
+  }),
+  (error: Error) => error instanceof LocalAgentDaemonProtocolError && error.code === "INVALID_PARAMS",
+);
 
 assert.deepEqual(decodeDaemonHello({
   status: {

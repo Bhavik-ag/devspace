@@ -149,7 +149,7 @@ const waitParamsSchema = z.object({
   timeoutMs: z.number().int().min(0).max(2_147_483_647).optional(),
 });
 
-const stopParamsSchema = z.object({ ifIdle: optionalBooleanSchema });
+const stopParamsSchema = z.object({ ifIdle: z.boolean().optional() });
 
 const logsParamsSchema = z.object({ lines: z.number().int().min(1).max(10_000).optional() });
 
