@@ -3,26 +3,42 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { z } from "zod";
 import {
   AcpLocalAgentDriver,
   AcpRuntime,
+  acpProtocolRecordSchema,
   acpCommandArgs,
   resolveAcpCommand,
   selectAcpPermissionOption,
+  type AcpConnection,
+  type AcpProtocolRecord,
+  type AcpRequest,
+  type AcpSessionQueue,
 } from "./local-agent-acp.js";
 import { GrokPromptCompletionRegistry } from "./local-agent-grok.js";
+import type { LocalAgentRuntimeContext } from "./local-agent-runtime.js";
 
-const requests: Array<{ method: string; params?: unknown }> = [];
+const requests: AcpRequest[] = [];
 
-const queues = new Map<string, { values: unknown[] }>();
+const queues = new Map<string, AcpSessionQueue>();
 
-const connection = {
+function textUpdate(sessionId: string, text: string): AcpProtocolRecord {
+  return acpProtocolRecordSchema.parse({
+    sessionId,
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text },
+    },
+  });
+}
+
+const connection: AcpConnection = {
   agent: {
-    async request(method: string, params?: unknown): Promise<unknown> {
-      requests.push({ method, params });
-      const input = params as { sessionId?: string } | undefined;
+    async request(request): Promise<AcpProtocolRecord> {
+      requests.push(request);
 
-      if (method === "session/new") {
+      if (request.method === "session/new") {
         const sessionId = "cursor_session_1";
         queues.set(sessionId, { values: [] });
 
@@ -35,21 +51,16 @@ const connection = {
         };
       }
 
-      if (method === "session/resume") {
-        const sessionId = input?.sessionId ?? "cursor_session_1";
+      if (request.method === "session/resume") {
+        const sessionId = request.params.sessionId;
         queues.set(sessionId, { values: [] });
 
         return { sessionId };
       }
 
-      if (method === "session/prompt") {
-        const queue = queues.get(input?.sessionId ?? "");
-        queue?.values.push({
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "ACP response" },
-          },
-        });
+      if (request.method === "session/prompt") {
+        const queue = queues.get(request.params.sessionId);
+        queue?.values.push(textUpdate(request.params.sessionId, "ACP response"));
 
         return { stopReason: "end_turn" };
       }
@@ -118,7 +129,7 @@ assert.equal(requests.filter(({ method }) => method === "session/resume").length
 assert.equal(requests.filter(({ method }) => method === "session/set_config_option").length, 4);
 
 assert.equal(
-  Object.hasOwn(requests.find(({ method }) => method === "session/new")?.params as object, "additionalDirectories"),
+  Object.hasOwn(requests.find(({ method }) => method === "session/new")?.params ?? {}, "additionalDirectories"),
   false,
 );
 
@@ -194,7 +205,7 @@ const closeOnlyRuntime = new AcpRuntime({
 await closeOnlyRuntime.releaseSession("close_only_session");
 
 assert.equal(
-  requests.filter(({ method, params }) => method === "session/close" && (params as { sessionId?: string })?.sessionId === "close_only_session").length,
+  requests.filter((request) => request.method === "session/close" && request.params.sessionId === "close_only_session").length,
   1,
   "session close support must not depend on resume support",
 );
@@ -243,7 +254,7 @@ assert.deepEqual(
   { optionId: "allow" },
 );
 
-const overlapQueues = new Map<string, { values: unknown[] }>();
+const overlapQueues = new Map<string, AcpSessionQueue>();
 
 let releaseOverlappingPrompt!: () => void;
 
@@ -253,26 +264,20 @@ const overlappingPrompt = new Promise<void>((resolvePrompt) => { releaseOverlapp
 
 const promptEntered = new Promise<void>((resolveEntered) => { markPromptEntered = resolveEntered; });
 
-const overlapConnection = {
+const overlapConnection: AcpConnection = {
   agent: {
-    async request(method: string, params?: unknown): Promise<unknown> {
-      const input = params as { sessionId?: string } | undefined;
+    async request(request): Promise<AcpProtocolRecord> {
 
-      if (method === "session/new") {
+      if (request.method === "session/new") {
         overlapQueues.set("overlap_session", { values: [] });
 
         return { sessionId: "overlap_session" };
       }
 
-      if (method === "session/prompt") {
+      if (request.method === "session/prompt") {
         markPromptEntered();
         await overlappingPrompt;
-        overlapQueues.get(input?.sessionId ?? "")?.values.push({
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "overlap response" },
-          },
-        });
+        overlapQueues.get(request.params.sessionId)?.values.push(textUpdate(request.params.sessionId, "overlap response"));
 
         return { stopReason: "end_turn" };
       }
@@ -322,11 +327,11 @@ assert.equal(completedOverlappingTurn.value.finalResponse, "overlap response");
 
 await overlapRuntime.close();
 
-const cachedContext = {
+const cachedContext: LocalAgentRuntimeContext = {
   agentId: "agt_acp",
-  provider: "cursor" as const,
+  provider: "cursor",
   workspaceRoot: "/tmp/project",
-  writeMode: "allowed" as const,
+  writeMode: "allowed",
 };
 
 const resolvedProject = resolve("/tmp/project");
@@ -397,7 +402,7 @@ if (process.platform === "win32") {
     assert.equal(shimStartup.isErr(), true);
 
     if (shimStartup.isErr()) assert.equal(shimStartup.error.code, "PROVIDER_PROTOCOL_ERROR");
-    const forwarded = JSON.parse(await readFile(marker, "utf8")) as string[];
+    const forwarded = z.array(z.string()).parse(JSON.parse(await readFile(marker, "utf8")));
     assert.equal(
       forwarded.filter((argument) => argument === resolve(workspaceRoot)).length,
       2,
@@ -424,19 +429,18 @@ if (process.platform !== "win32") {
   }
 }
 
-const grokRequests: Array<{ method: string; params?: unknown }> = [];
+const grokRequests: AcpRequest[] = [];
 
-const grokQueues = new Map<string, { values: unknown[] }>();
+const grokQueues = new Map<string, AcpSessionQueue>();
 
 const grokCompletionRegistry = new GrokPromptCompletionRegistry();
 
-const grokConnection = {
+const grokConnection: AcpConnection = {
   agent: {
-    async request(method: string, params?: unknown): Promise<unknown> {
-      grokRequests.push({ method, params });
-      const input = params as { sessionId?: string; _meta?: { promptId?: string } } | undefined;
+    async request(request): Promise<AcpProtocolRecord> {
+      grokRequests.push(request);
 
-      if (method === "session/new") {
+      if (request.method === "session/new") {
         grokQueues.set("grok_session_1", { values: [] });
 
         return {
@@ -451,18 +455,13 @@ const grokConnection = {
         };
       }
 
-      if (method === "session/set_model") return {};
+      if (request.method === "session/set_model") return {};
 
-      if (method === "session/prompt") {
-        grokQueues.get(input?.sessionId ?? "")?.values.push({
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "Grok response" },
-          },
-        });
+      if (request.method === "session/prompt") {
+        grokQueues.get(request.params.sessionId)?.values.push(textUpdate(request.params.sessionId, "Grok response"));
         setImmediate(() => grokCompletionRegistry.resolve({
-          sessionId: input?.sessionId ?? "",
-          promptId: input?._meta?.promptId,
+          sessionId: request.params.sessionId,
+          promptId: request.params._meta?.promptId,
           stopReason: "end_turn",
         }));
 
@@ -501,7 +500,7 @@ if (grokResult.isErr()) throw grokResult.error;
 assert.equal(grokResult.value.finalResponse, "Grok response");
 
 assert.deepEqual(
-  grokRequests.filter(({ method }) => method === "session/set_model").map(({ params }) => params),
+  grokRequests.flatMap((request) => request.method === "session/set_model" ? [request.params] : []),
   [{ sessionId: "grok_session_1", modelId: "grok-4.5", _meta: { reasoningEffort: "low" } }],
 );
 
@@ -509,10 +508,10 @@ assert.equal(grokCompletionRegistry.size, 0);
 
 await grokRuntime.close();
 
-const grokConfigurationConnection = {
+const grokConfigurationConnection: AcpConnection = {
   agent: {
-    async request(method: string): Promise<unknown> {
-      if (method === "session/new") {
+    async request(request): Promise<AcpProtocolRecord> {
+      if (request.method === "session/new") {
         return {
           sessionId: "grok_configuration_session",
           models: {
