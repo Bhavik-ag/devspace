@@ -358,6 +358,42 @@ const recoveredApplicationTurn = await applicationErrorPool.run(applicationError
 
 assert.equal(recoveredApplicationTurn.isOk(), true);
 
+const futureErrorClient = {
+  global: {
+    async health() {},
+  },
+  session: {
+    async create() { return { data: { id: "session_future_error" } }; },
+    async prompt() {
+      return {
+        data: {
+          info: {
+            role: "assistant",
+            error: JSON.parse('{"name":"FutureError","data":{}}'),
+          },
+          parts: [],
+        },
+      };
+    },
+  },
+} satisfies OpencodeClientLike;
+
+const futureErrorRuntime = new OpencodeRuntime(futureErrorClient, { close: () => undefined });
+
+const futureError = await futureErrorRuntime.run({
+  prompt: "future error",
+  workspaceRoot: "/tmp/project",
+});
+
+assert.equal(futureError.isErr(), true);
+
+if (futureError.isErr()) {
+  assert.equal(futureError.error.code, "PROVIDER_EXECUTION_ERROR");
+  assert.equal(futureError.error.message, "OpenCode returned FutureError.");
+}
+
+await futureErrorRuntime.close();
+
 if (recoveredApplicationTurn.isErr()) throw recoveredApplicationTurn.error;
 
 assert.equal(recoveredApplicationTurn.value.finalResponse, "ok");

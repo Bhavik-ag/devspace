@@ -610,18 +610,15 @@ function assertOpenCodePromptSucceeded(value: OpencodePromptData): void {
 }
 
 function opencodeAssistantErrorMessage(error: NonNullable<AssistantMessage["error"]>): string {
-  switch (error.name) {
-    case "ProviderAuthError":
-    case "UnknownError":
-    case "MessageAbortedError":
-    case "StructuredOutputError":
-    case "ContextOverflowError":
-    case "ContentFilterError":
-    case "APIError":
-      return error.data.message;
-    case "MessageOutputLengthError":
-      return "OpenCode returned MessageOutputLengthError.";
+  const message = z.object({ message: z.string() }).safeParse(error.data);
+
+  if (message.success) return message.data.message;
+
+  if (error.name === "MessageOutputLengthError") {
+    return "OpenCode returned MessageOutputLengthError.";
   }
+
+  return `OpenCode returned ${error.name}.`;
 }
 
 function extractTypedOpenCodeFinalResponse(value: OpencodePromptData): string {
