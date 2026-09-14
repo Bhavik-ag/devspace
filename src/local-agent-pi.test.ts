@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  extractPiFinalResponse,
+  extractPiProviderError,
   PiLocalAgentDriver,
   type PiSessionFactory,
   type PiSessionLike,
@@ -208,3 +210,11 @@ if (missingModel.isErr()) {
 }
 
 await missingModelRuntime.value.close();
+
+const malformedMessages = JSON.parse('{"messages":[{"role":"assistant"}]}');
+
+assert.equal(extractPiFinalResponse(malformedMessages), "");
+
+const malformedError = JSON.parse('{"errorMessage":{"message":"failed"}}');
+
+assert.equal(extractPiProviderError(malformedError), "");

@@ -428,8 +428,14 @@ const piMessageSchema = z.object({ role: z.string(), content: z.array(piContentS
 
 const piPayloadSchema: z.ZodType<PiPayload> = z.lazy(() => z.union([
   z.array(piMessageSchema),
-  z.object({ messages: z.array(piMessageSchema), data: piPayloadSchema.optional(), result: piPayloadSchema.optional() }).passthrough(),
-  z.object({ data: piPayloadSchema.optional(), result: piPayloadSchema.optional() }).passthrough(),
+  z.object({
+    messages: z.array(piMessageSchema).optional(),
+    data: piPayloadSchema.optional(),
+    result: piPayloadSchema.optional(),
+    message: piPayloadSchema.optional(),
+    error: z.string().optional(),
+    errorMessage: z.string().optional(),
+  }).passthrough(),
 ]));
 
 type PiMessage = z.infer<typeof piMessageSchema>;
@@ -503,5 +509,5 @@ function unwrapProviderPayload(value: PiPayload | undefined): PiPayload | undefi
 }
 
 function readArray(value: PiPayload | undefined, key: "messages"): PiMessage[] | undefined {
-  return value && !Array.isArray(value) && key in value ? value.messages : undefined;
+  return value && !Array.isArray(value) ? value[key] : undefined;
 }
