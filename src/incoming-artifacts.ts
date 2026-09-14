@@ -284,6 +284,14 @@ export function describeIncomingArtifactValue(
 
     if (booleanValue.success) return { type: "boolean" };
 
+    if (
+      Object.is(current, Infinity)
+      || Object.is(current, -Infinity)
+      || Object.is(current, Number.NaN)
+    ) {
+      return { type: "number", finite: false };
+    }
+
     const numberValue = z.number().safeParse(current);
 
     if (numberValue.success) return { type: "number", finite: Number.isFinite(numberValue.data) };

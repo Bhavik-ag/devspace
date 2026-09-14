@@ -14,6 +14,8 @@ await testOpenAIFileAdapter();
 
 testLogFieldsRedaction();
 
+testNonFiniteNumberDescription();
+
 async function testRegistryFailsClosed(): Promise<void> {
   const registry = new IncomingArtifactAdapterRegistry();
   await expectArtifactError(
@@ -222,6 +224,15 @@ function testLogFieldsRedaction(): void {
   assert.equal(serialized.includes("private-value"), false);
   assert.equal(serialized.includes("download_url"), true);
   assert.equal(serialized.includes("file_id"), true);
+}
+
+function testNonFiniteNumberDescription(): void {
+  for (const value of [Infinity, -Infinity, Number.NaN]) {
+    assert.deepEqual(describeIncomingArtifactValue(value), {
+      type: "number",
+      finite: false,
+    });
+  }
 }
 
 async function collect(stream: Readable): Promise<Buffer> {
