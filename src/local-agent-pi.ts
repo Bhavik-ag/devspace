@@ -424,7 +424,10 @@ const piTextPartSchema = z.object({ type: z.literal("text"), text: z.string() })
 
 const piContentSchema = z.union([piTextPartSchema, z.object({ type: z.string() }).passthrough()]);
 
-const piMessageSchema = z.object({ role: z.string(), content: z.array(piContentSchema) }).passthrough();
+const piMessageSchema = z.object({
+  role: z.string(),
+  content: z.json().optional(),
+}).passthrough();
 
 const piPayloadSchema: z.ZodType<PiPayload> = z.lazy(() => z.union([
   z.array(piMessageSchema),
@@ -463,7 +466,11 @@ export function extractPiFinalResponse(value: PiExternalPayload): string {
 
     if (!message || message.role !== "assistant") continue;
 
-    const text = message.content
+    const content = z.array(piContentSchema).safeParse(message.content);
+
+    if (!content.success) continue;
+
+    const text = content.data
       .filter((part): part is Extract<PiContent, { type: "text" }> => part.type === "text")
       .map((part) => part.text)
       .filter(Boolean)
