@@ -92,6 +92,18 @@ if (conditionalStop.method !== "daemon.stop") throw new Error("expected daemon.s
 
 assert.equal(conditionalStop.params.ifIdle, true);
 
+const malformedOptionalStop = decodeLocalAgentDaemonRequest({
+  requestId: "req_stop_compat",
+  protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
+  authToken: "test-secret",
+  method: "daemon.stop",
+  params: { ifIdle: "true" },
+});
+
+if (malformedOptionalStop.method !== "daemon.stop") throw new Error("expected daemon.stop request");
+
+assert.equal(malformedOptionalStop.params.ifIdle, undefined);
+
 assert.deepEqual(decodeDaemonHello({
   status: {
     state: "ready",
@@ -223,6 +235,21 @@ if (waitRequest.method !== "agent.wait") throw new Error("expected agent.wait re
 assert.deepEqual(waitRequest.params.ids, ["agt_one", "agt_two"]);
 
 assert.equal(waitRequest.params.timeoutMs, 5_000);
+
+const emptyWaitRequest = decodeLocalAgentDaemonRequest({
+  requestId: "req_wait_empty",
+  protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
+  authToken: "test-secret",
+  method: "agent.wait",
+  params: {
+    ids: [],
+    scope: { workspaceId: "ws_test", workspaceRoot: "/tmp/project" },
+  },
+});
+
+if (emptyWaitRequest.method !== "agent.wait") throw new Error("expected agent.wait request");
+
+assert.deepEqual(emptyWaitRequest.params.ids, []);
 
 assert.deepEqual(decodeAgentWaitResults([
   { id: "agt_one", status: "completed", response: "Done." },
