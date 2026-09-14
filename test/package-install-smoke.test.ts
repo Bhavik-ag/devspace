@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { writeTestDevspaceConfig } from "../src/test-support/config.test.js";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -53,7 +54,10 @@ function testPackedPackageLaunchers(): void {
       ...env,
     });
 
-    const config = JSON.parse(cliOutput) as { tools?: { mode?: string } };
+    const config = z.object({
+      tools: z.object({ mode: z.string().optional() }).optional(),
+    }).parse(JSON.parse(cliOutput));
+
     assert.equal(config.tools?.mode, "codex");
 
     execInstalledBin(installRoot, "devspace-agentd", [], {
