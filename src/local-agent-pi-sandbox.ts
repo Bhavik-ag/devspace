@@ -18,6 +18,7 @@ import {
   createWriteTool,
   type BashOperations,
   type EditOperations,
+  type ExtensionAPI,
   type FindOperations,
   type GrepOperations,
   type LsOperations,
@@ -40,8 +41,33 @@ interface PiSandboxSessionState {
 }
 
 export interface PiSandboxSessionHandle {
-  readonly sessionId?: string;
+  readonly sessionId: string;
 }
+
+type DynamicTool<T extends { execute: (...args: any[]) => any }> = Omit<T, "execute"> & {
+  execute: (...args: Parameters<T["execute"]>) => ReturnType<T["execute"]>;
+};
+
+type NamedPiSandboxTool<Name extends string, Tool extends { execute: (...args: any[]) => any }> =
+  DynamicTool<Tool> & { name: Name };
+
+export type PiSandboxTool =
+  | NamedPiSandboxTool<"read", ReturnType<typeof createReadTool>>
+  | NamedPiSandboxTool<"write", ReturnType<typeof createWriteTool>>
+  | NamedPiSandboxTool<"edit", ReturnType<typeof createEditTool>>
+  | NamedPiSandboxTool<"grep", ReturnType<typeof createGrepTool>>
+  | NamedPiSandboxTool<"find", ReturnType<typeof createFindTool>>
+  | NamedPiSandboxTool<"ls", ReturnType<typeof createLsTool>>
+  | NamedPiSandboxTool<"bash", ReturnType<typeof createBashTool>>;
+
+export interface PiSandboxExtensionApi {
+  registerTool(tool: PiSandboxTool): void;
+}
+
+type PiSandboxExtensionFactory = {
+  (pi: ExtensionAPI): void;
+  (pi: PiSandboxExtensionApi): void;
+};
 
 const PI_NETWORK_ALLOWLIST = [
   "npmjs.org",
@@ -91,31 +117,31 @@ export function createPiSandboxExtension(
   workspace: string,
   modeRef: PiSandboxModeRef,
   env: NodeJS.ProcessEnv = {},
-): (pi: Pick<import("@earendil-works/pi-coding-agent").ExtensionAPI, "registerTool">) => void {
-  return (pi) => {
+): PiSandboxExtensionFactory {
+  return (pi: ExtensionAPI | PiSandboxExtensionApi) => {
     const localRead = createReadTool(workspace);
     const restrictedRead = createReadTool(workspace, { operations: createReadOperations(workspace) });
-    pi.registerTool(dynamicTool(localRead, restrictedRead, modeRef));
+    pi.registerTool(dynamicTool("read", localRead, restrictedRead, modeRef));
 
     const localWrite = createWriteTool(workspace);
     const restrictedWrite = createWriteTool(workspace, { operations: createWriteOperations(workspace) });
-    pi.registerTool(dynamicTool(localWrite, restrictedWrite, modeRef, true));
+    pi.registerTool(dynamicTool("write", localWrite, restrictedWrite, modeRef, true));
 
     const localEdit = createEditTool(workspace);
     const restrictedEdit = createEditTool(workspace, { operations: createEditOperations(workspace) });
-    pi.registerTool(dynamicTool(localEdit, restrictedEdit, modeRef, true));
+    pi.registerTool(dynamicTool("edit", localEdit, restrictedEdit, modeRef, true));
 
     const localGrep = createGrepTool(workspace);
     const restrictedGrep = createGrepTool(workspace, { operations: createGrepOperations(workspace) });
-    pi.registerTool(dynamicTool(localGrep, restrictedGrep, modeRef));
+    pi.registerTool(dynamicTool("grep", localGrep, restrictedGrep, modeRef));
 
     const localFind = createFindTool(workspace);
     const restrictedFind = createFindTool(workspace, { operations: createFindOperations(workspace) });
-    pi.registerTool(dynamicTool(localFind, restrictedFind, modeRef));
+    pi.registerTool(dynamicTool("find", localFind, restrictedFind, modeRef));
 
     const localLs = createLsTool(workspace);
     const restrictedLs = createLsTool(workspace, { operations: createLsOperations(workspace) });
-    pi.registerTool(dynamicTool(localLs, restrictedLs, modeRef));
+    pi.registerTool(dynamicTool("ls", localLs, restrictedLs, modeRef));
 
     const withProviderEnv = (context: { command: string; cwd: string; env: NodeJS.ProcessEnv }) => ({
       ...context,
@@ -129,7 +155,7 @@ export function createPiSandboxExtension(
       spawnHook: withProviderEnv,
     });
 
-    pi.registerTool(dynamicTool(localBash, restrictedBash, modeRef, true));
+    pi.registerTool(dynamicTool("bash", localBash, restrictedBash, modeRef, true));
   };
 }
 
@@ -216,21 +242,25 @@ export async function releasePiSandboxSession(session: PiSandboxSessionHandle): 
   else await reset();
 }
 
-function dynamicTool<T extends { execute: (...args: any[]) => any }>(
+function dynamicTool<Name extends string, T extends { execute: (...args: any[]) => any }>(
+  name: Name,
   unrestricted: T,
   restricted: T,
   modeRef: PiSandboxModeRef,
   writeCapable = false,
-){
+): DynamicTool<T> & { name: Name } {
+  const execute = (...args: Parameters<T["execute"]>): ReturnType<T["execute"]> => {
+    if (writeCapable && modeRef.value === "read_only") {
+      throw new Error("Pi read-only mode does not allow write-capable tools.");
+    }
+
+    return (modeRef.value === "full_access" ? unrestricted : restricted).execute(...args);
+  };
+
   return {
     ...restricted,
-    execute: (...args: Parameters<T["execute"]>) => {
-      if (writeCapable && modeRef.value === "read_only") {
-        throw new Error("Pi read-only mode does not allow write-capable tools.");
-      }
-
-      return (modeRef.value === "full_access" ? unrestricted : restricted).execute(...args);
-    },
+    name,
+    execute,
   };
 }
 

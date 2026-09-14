@@ -4,12 +4,12 @@ import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { z } from "zod";
 import {
   createPiSandboxConfig,
   createPiSandboxExtension,
   createPiSandboxModeRef,
+  type PiSandboxExtensionApi,
+  type PiSandboxTool,
   registerPiSandboxSession,
   releasePiSandboxSession,
 } from "./local-agent-pi-sandbox.js";
@@ -24,12 +24,15 @@ import {
       ...process.env,
       DEVSPACE_PI_ENV_TEST: "provider-env",
     })(api);
-    const bash = tools.get("bash");
+    const bash = tools.bash;
     assert.ok(bash);
 
     const result = await bash.execute("provider-env-test", { command: "printf %s \"$DEVSPACE_PI_ENV_TEST\"" });
 
-    assert.equal(result.content[0]?.text, "provider-env");
+    const [content] = result.content;
+    assert.equal(content?.type, "text");
+
+    if (content?.type === "text") assert.equal(content.text, "provider-env");
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
@@ -55,7 +58,7 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
     createPiSandboxExtension(workspace, modeRef)(api);
     await registerPiSandboxSession(session, workspace, modeRef, "allowed");
 
-    const bash = tools.get("bash");
+    const bash = tools.bash;
     assert.ok(bash, "Pi sandbox extension registers a bash tool");
     await bash.execute("bash-inside-write-test", {
       command: `touch '${join(workspace, "inside.txt")}'`,
@@ -73,7 +76,7 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
     );
     assert.equal(existsSync(outside), false, "sandboxed Pi bash cannot write outside the workspace");
 
-    const read = tools.get("read");
+    const read = tools.read;
     assert.ok(read, "Pi sandbox extension registers a read tool");
     await assert.rejects(
       read.execute("read-test", { path: outside }),
@@ -91,7 +94,7 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
       "restricted Pi reads must resolve symlinks before enforcing the workspace boundary",
     );
 
-    const write = tools.get("write");
+    const write = tools.write;
     assert.ok(write, "Pi sandbox extension registers a write tool");
     modeRef.value = "read_only";
     assert.throws(
@@ -121,32 +124,41 @@ if (SandboxManager.isSupportedPlatform() && dependencies.errors.length === 0) {
   console.log("Pi sandbox integration test skipped: sandbox-runtime dependencies are unavailable.");
 }
 
-interface TestToolResult {
-  content: Array<{ type: string; text?: string }>;
-}
+type TestBashTool = Extract<PiSandboxTool, { name: "bash" }>;
 
-interface TestTool {
-  name: string;
-  execute(toolCallId: string, params: { [key: string]: string }): Promise<TestToolResult>;
+type TestReadTool = Extract<PiSandboxTool, { name: "read" }>;
+
+type TestWriteTool = Extract<PiSandboxTool, { name: "write" }>;
+
+interface TestTools {
+  bash?: TestBashTool;
+  read?: TestReadTool;
+  write?: TestWriteTool;
 }
 
 interface TestToolCollector {
-  api: Pick<ExtensionAPI, "registerTool">;
-  tools: Map<string, TestTool>;
+  api: PiSandboxExtensionApi;
+  tools: TestTools;
 }
 
 function testToolCollector(): TestToolCollector {
-  const tools = new Map<string, TestTool>();
+  const tools: TestTools = {};
 
-  const registrar = {
-    registerTool: (tool: TestTool) => { tools.set(tool.name, tool); },
+  const api: PiSandboxExtensionApi = {
+    registerTool(tool: PiSandboxTool) {
+      switch (tool.name) {
+        case "bash":
+          tools.bash = tool;
+          break;
+        case "read":
+          tools.read = tool;
+          break;
+        case "write":
+          tools.write = tool;
+          break;
+      }
+    },
   };
-
-  const extensionRegistrarSchema = z.custom<Pick<ExtensionAPI, "registerTool">>(
-    (value) => z.object({ registerTool: z.function() }).safeParse(value).success,
-  );
-
-  const api = extensionRegistrarSchema.parse(registrar);
 
   return { api, tools };
 }
