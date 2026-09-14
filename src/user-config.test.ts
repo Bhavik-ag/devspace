@@ -69,6 +69,13 @@ await withConfigDirAsync(async (configDir) => {
   assert.equal(loadDevspaceFiles({ DEVSPACE_CONFIG_DIR: configDir }).config.server.port, 8787);
 });
 
+await withConfigDirAsync(async (configDir) => {
+  await assert.rejects(
+    migrateInChildProcess(configDir, 'process.stdout.write("{}");'),
+    (error) => error instanceof z.ZodError,
+  );
+});
+
 withConfigDir((configDir, env) => {
   writeFileSync(join(configDir, "config.jsonc"), `{
     // This comment must survive config updates.
@@ -165,10 +172,11 @@ async function withConfigDirAsync(
 
 async function migrateInChildProcess(
   configDir: string,
+  sourceOverride?: string,
 ): Promise<{ migrated: boolean }> {
   const moduleUrl = new URL("./user-config.ts", import.meta.url).href;
 
-  const source = [
+  const source = sourceOverride ?? [
     `import { loadDevspaceFiles } from ${JSON.stringify(moduleUrl)};`,
     "const files = loadDevspaceFiles();",
     "process.stdout.write(JSON.stringify({ migrated: files.migratedLegacyConfig }));",
@@ -200,7 +208,11 @@ async function migrateInChildProcess(
         return;
       }
 
-      resolve(migrationChildResultSchema.parse(JSON.parse(stdout)));
+      try {
+        resolve(migrationChildResultSchema.parse(JSON.parse(stdout)));
+      } catch (cause) {
+        reject(cause);
+      }
     });
   });
 }
