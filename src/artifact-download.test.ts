@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {
-  link,
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -8,7 +8,6 @@ import {
   rm,
   stat,
   symlink,
-  unlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -101,7 +100,7 @@ function testOneToolContract(): void {
 
 function testPlatformSupportContract(): void {
   assert.equal(isArtifactDownloadSupportedPlatform("linux"), true);
-  assert.equal(isArtifactDownloadSupportedPlatform("darwin"), false);
+  assert.equal(isArtifactDownloadSupportedPlatform("darwin"), true);
   assert.equal(isArtifactDownloadSupportedPlatform("freebsd"), false);
   assert.equal(isArtifactDownloadSupportedPlatform("openbsd"), false);
   assert.equal(isArtifactDownloadSupportedPlatform("netbsd"), false);
@@ -285,6 +284,7 @@ async function testCrashLeftoverCleanup(testRoot: string): Promise<void> {
   await writeFile(unrelated, "unrelated");
   const old = new Date(Date.now() - (48 * 60 * 60 * 1_000));
   await utimes(stalePartial, old, old);
+  if (process.platform !== "win32") await chmod(stalePartial, 0o000);
 
   await downloadIncomingArtifact({
     registry: registryFor({ name: "second.txt", stream: Readable.from(["second"]) }),
@@ -357,10 +357,16 @@ async function testPublicationFailurePreservesReplacement(testRoot: string): Pro
       maxFileBytes: 1024,
       file: { native: true },
       path: "generated.txt",
-      publishLink: async (partialPath, candidatePath) => {
-        await link(partialPath, candidatePath);
-        await unlink(candidatePath);
-        await writeFile(candidatePath, "replacement");
+      publishEntry: async (directory, partialName, candidateName) => {
+        await directory.link(partialName, candidateName);
+        await directory.unlink(candidateName);
+        const replacement = await directory.createExclusiveFile(candidateName, 0o600);
+        try {
+          await replacement.writeAll(Buffer.from("replacement"), 0);
+          await replacement.sync();
+        } finally {
+          await replacement.close();
+        }
       },
     }),
     "artifact_destination_publish_failed",
