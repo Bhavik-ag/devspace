@@ -81,7 +81,9 @@ export async function prepareDarwinArtifactDestinationDirectory(
         return artifactFileFromFd(fd);
       },
       async statRegularFile(name) {
-        const entry: DarwinStat = {};
+        // Darwin's LP64 struct stat is 144 bytes. Use a raw buffer here instead
+        // of nested Koffi output marshalling, then read only the fields we need.
+        const entry = Buffer.alloc(144);
         if (libc.fstatat(finalParentFd, name, entry, AT_SYMLINK_NOFOLLOW) < 0) {
           const errno = koffi.errno();
           if (errno === koffi.os.errno.ENOENT) return undefined;
@@ -137,7 +139,7 @@ interface DarwinLibc {
   open(path: string, flags: number, mode?: number): number;
   openat(fd: number, path: string, flags: number, mode?: number): number;
   mkdirat(fd: number, path: string, mode: number): number;
-  fstatat(fd: number, path: string, stat: DarwinStat, flags: number): number;
+  fstatat(fd: number, path: string, stat: Buffer, flags: number): number;
   linkat(oldFd: number, oldPath: string, newFd: number, newPath: string, flags: number): number;
   unlinkat(fd: number, path: string, flags: number): number;
   dup(fd: number): number;
@@ -145,32 +147,6 @@ interface DarwinLibc {
   readdir(dir: unknown): unknown;
   closedir(dir: unknown): number;
   DIRENT: ReturnType<typeof koffi.struct>;
-}
-
-interface DarwinTimespec {
-  tv_sec?: number | bigint;
-  tv_nsec?: number | bigint;
-}
-
-interface DarwinStat {
-  st_dev?: number;
-  st_mode?: number;
-  st_nlink?: number;
-  st_ino?: number | bigint;
-  st_uid?: number;
-  st_gid?: number;
-  st_rdev?: number;
-  st_atimespec?: DarwinTimespec;
-  st_mtimespec?: DarwinTimespec;
-  st_ctimespec?: DarwinTimespec;
-  st_birthtimespec?: DarwinTimespec;
-  st_size?: number | bigint;
-  st_blocks?: number | bigint;
-  st_blksize?: number;
-  st_flags?: number;
-  st_gen?: number;
-  st_lspare?: number;
-  st_qspare?: Array<number | bigint>;
 }
 
 let cachedDarwinLibc: DarwinLibc | undefined;
@@ -184,30 +160,6 @@ function createDarwinLibc(): DarwinLibc {
   const libc = koffi.load("/usr/lib/libSystem.B.dylib");
   const open = libc.func("int open(const char *path, int flags, ...)");
   const openat = libc.func("int openat(int fd, const char *path, int flags, ...)");
-  const TIMESPEC = koffi.struct("DevSpaceArtifactDarwinTimespec", {
-    tv_sec: "int64_t",
-    tv_nsec: "int64_t",
-  });
-  const STAT = koffi.struct("DevSpaceArtifactDarwinStat", {
-    st_dev: "int32_t",
-    st_mode: "uint16_t",
-    st_nlink: "uint16_t",
-    st_ino: "uint64_t",
-    st_uid: "uint32_t",
-    st_gid: "uint32_t",
-    st_rdev: "int32_t",
-    st_atimespec: TIMESPEC,
-    st_mtimespec: TIMESPEC,
-    st_ctimespec: TIMESPEC,
-    st_birthtimespec: TIMESPEC,
-    st_size: "int64_t",
-    st_blocks: "int64_t",
-    st_blksize: "int32_t",
-    st_flags: "uint32_t",
-    st_gen: "uint32_t",
-    st_lspare: "int32_t",
-    st_qspare: koffi.array("int64_t", 2),
-  });
   const DIR = koffi.opaque("DevSpaceArtifactDarwinDIR");
   const DIR_PTR = koffi.pointer(DIR);
   const DIRENT = koffi.struct("DevSpaceArtifactDarwinDirent", {
@@ -233,7 +185,7 @@ function createDarwinLibc(): DarwinLibc {
     fstatat: libc.func(
       "fstatat",
       "int",
-      ["int", "str", koffi.out(koffi.pointer(STAT)), "int"],
+      ["int", "str", "void *", "int"],
     ),
     linkat: libc.func("linkat", "int", ["int", "str", "int", "str", "int"]),
     unlinkat: libc.func("unlinkat", "int", ["int", "str", "int"]),
@@ -245,26 +197,18 @@ function createDarwinLibc(): DarwinLibc {
   } as DarwinLibc;
 }
 
-function darwinArtifactEntry(entry: DarwinStat): ArtifactEntry | undefined {
-  const mode = entry.st_mode ?? 0;
+function darwinArtifactEntry(entry: Buffer): ArtifactEntry | undefined {
+  const mode = entry.readUInt16LE(4);
   if ((mode & S_IFMT) !== S_IFREG) return undefined;
 
-  const mtime = entry.st_mtimespec;
-  if (!mtime) {
-    throw new ArtifactError(
-      "artifact_entry_unsafe",
-      "Artifact entry metadata was incomplete.",
-    );
-  }
-
+  const mtimeSeconds = Number(entry.readBigInt64LE(48));
+  const mtimeNanoseconds = Number(entry.readBigInt64LE(56));
   return {
-    dev: Number(entry.st_dev ?? 0),
-    ino: Number(entry.st_ino ?? 0),
-    size: Number(entry.st_size ?? 0),
-    uid: Number(entry.st_uid ?? 0),
-    mtimeMs:
-      (Number(mtime.tv_sec ?? 0) * 1_000)
-      + (Number(mtime.tv_nsec ?? 0) / 1_000_000),
+    dev: entry.readInt32LE(0),
+    ino: Number(entry.readBigUInt64LE(8)),
+    size: Number(entry.readBigInt64LE(96)),
+    uid: entry.readUInt32LE(16),
+    mtimeMs: (mtimeSeconds * 1_000) + (mtimeNanoseconds / 1_000_000),
   };
 }
 
