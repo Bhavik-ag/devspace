@@ -2,18 +2,16 @@ import { constants as fsConstants } from "node:fs";
 import { mkdir, open, type FileHandle } from "node:fs/promises";
 import { join, toNamespacedPath } from "node:path";
 import koffi from "koffi";
+import {
+  createPathArtifactDestinationDirectory,
+  type ArtifactDestinationDirectory,
+} from "./artifact-destination.js";
 import { ArtifactError } from "./artifact-error.js";
-
-export interface WindowsArtifactDestinationDirectory {
-  handle: FileHandle;
-  anchorPath: string;
-  close(): Promise<void>;
-}
 
 export async function prepareWindowsArtifactDestinationDirectory(
   workspaceRoot: string,
   parentParts: readonly string[],
-): Promise<WindowsArtifactDestinationDirectory> {
+): Promise<ArtifactDestinationDirectory> {
   const pinnedHandles: unknown[] = [];
   let directoryHandle: FileHandle | undefined;
   let parentPath = workspaceRoot;
@@ -41,14 +39,13 @@ export async function prepareWindowsArtifactDestinationDirectory(
       );
     }
 
-    return {
-      handle: directoryHandle,
-      anchorPath: parentPath,
-      async close() {
+    return createPathArtifactDestinationDirectory(
+      parentPath,
+      async () => {
         await directoryHandle?.close().catch(() => undefined);
         closeWindowsHandles(pinnedHandles);
       },
-    };
+    );
   } catch (error) {
     await directoryHandle?.close().catch(() => undefined);
     closeWindowsHandles(pinnedHandles);

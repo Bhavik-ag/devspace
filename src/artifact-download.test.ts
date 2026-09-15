@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import {
-  link,
   mkdir,
   mkdtemp,
   readFile,
@@ -8,7 +7,6 @@ import {
   rm,
   stat,
   symlink,
-  unlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -357,10 +355,16 @@ async function testPublicationFailurePreservesReplacement(testRoot: string): Pro
       maxFileBytes: 1024,
       file: { native: true },
       path: "generated.txt",
-      publishLink: async (partialPath, candidatePath) => {
-        await link(partialPath, candidatePath);
-        await unlink(candidatePath);
-        await writeFile(candidatePath, "replacement");
+      publishEntry: async (directory, partialName, candidateName) => {
+        await directory.link(partialName, candidateName);
+        await directory.unlink(candidateName);
+        const replacement = await directory.createExclusiveFile(candidateName, 0o600);
+        try {
+          await replacement.writeAll(Buffer.from("replacement"), 0);
+          await replacement.sync();
+        } finally {
+          await replacement.close();
+        }
       },
     }),
     "artifact_destination_publish_failed",
