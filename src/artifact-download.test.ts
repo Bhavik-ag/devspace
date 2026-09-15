@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -283,6 +284,7 @@ async function testCrashLeftoverCleanup(testRoot: string): Promise<void> {
   await writeFile(unrelated, "unrelated");
   const old = new Date(Date.now() - (48 * 60 * 60 * 1_000));
   await utimes(stalePartial, old, old);
+  if (process.platform !== "win32") await chmod(stalePartial, 0o000);
 
   await downloadIncomingArtifact({
     registry: registryFor({ name: "second.txt", stream: Readable.from(["second"]) }),

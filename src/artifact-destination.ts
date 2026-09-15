@@ -19,9 +19,17 @@ export interface ArtifactFile {
   close(): Promise<void>;
 }
 
+export interface ArtifactEntry {
+  dev: number;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+  uid: number;
+}
+
 export interface ArtifactDestinationDirectory {
   createExclusiveFile(name: string, mode: number): Promise<ArtifactFile>;
-  statRegularFile(name: string): Promise<Stats | undefined>;
+  statRegularFile(name: string): Promise<ArtifactEntry | undefined>;
   link(sourceName: string, destinationName: string): Promise<void>;
   unlink(name: string): Promise<void>;
   listEntries(): Promise<readonly string[]>;
@@ -49,7 +57,9 @@ export function createPathArtifactDestinationDirectory(
         if (isNodeError(error) && error.code === "ENOENT") return undefined;
         throw error;
       }
-      return !entry.isSymbolicLink() && entry.isFile() ? entry : undefined;
+      return !entry.isSymbolicLink() && entry.isFile()
+        ? artifactEntryFromStats(entry)
+        : undefined;
     },
     link(sourceName, destinationName) {
       return link(join(anchorPath, sourceName), join(anchorPath, destinationName));
@@ -65,7 +75,7 @@ export function createPathArtifactDestinationDirectory(
 }
 
 export function assertSameArtifactEntry(
-  entry: Stats | undefined,
+  entry: ArtifactEntry | undefined,
   expected: Stats,
   code: "artifact_partial_unsafe" | "artifact_destination_publish_failed",
 ): void {
@@ -82,6 +92,16 @@ export function assertSameArtifactEntry(
         : "Published artifact did not match the verified download.",
     );
   }
+}
+
+function artifactEntryFromStats(entry: Stats): ArtifactEntry {
+  return {
+    dev: entry.dev,
+    ino: entry.ino,
+    size: entry.size,
+    mtimeMs: entry.mtimeMs,
+    uid: entry.uid,
+  };
 }
 
 function artifactFileFromHandle(handle: FileHandle): ArtifactFile {

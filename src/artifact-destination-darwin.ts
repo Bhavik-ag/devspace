@@ -8,16 +8,18 @@ import {
 } from "node:fs";
 import koffi from "koffi";
 import type {
+  ArtifactEntry,
   ArtifactDestinationDirectory,
   ArtifactFile,
 } from "./artifact-destination.js";
 import { ArtifactError } from "./artifact-error.js";
 
 const NO_FOLLOW = fsConstants.O_NOFOLLOW ?? 0;
-const NONBLOCK = fsConstants.O_NONBLOCK ?? 0;
 const O_CLOEXEC = 0x01000000;
 const DIRECTORY_FLAGS = fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0) | NO_FOLLOW | O_CLOEXEC;
-const READ_ENTRY_FLAGS = fsConstants.O_RDONLY | NO_FOLLOW | NONBLOCK | O_CLOEXEC;
+const AT_SYMLINK_NOFOLLOW = 0x0020;
+const S_IFMT = 0o170000;
+const S_IFREG = 0o100000;
 
 export async function prepareDarwinArtifactDestinationDirectory(
   workspaceRoot: string,
@@ -79,23 +81,16 @@ export async function prepareDarwinArtifactDestinationDirectory(
         return artifactFileFromFd(fd);
       },
       async statRegularFile(name) {
-        const fd = libc.openat(finalParentFd, name, READ_ENTRY_FLAGS);
-        if (fd < 0) {
+        const entry: DarwinStat = {};
+        if (libc.fstatat(finalParentFd, name, entry, AT_SYMLINK_NOFOLLOW) < 0) {
           const errno = koffi.errno();
-          if (errno === koffi.os.errno.ENOENT || errno === koffi.os.errno.ELOOP) {
-            return undefined;
-          }
+          if (errno === koffi.os.errno.ENOENT) return undefined;
           throw new ArtifactError(
             "artifact_entry_unsafe",
             `Artifact entry could not be inspected safely (errno ${errno}).`,
           );
         }
-        try {
-          const entry = await fstatFd(fd);
-          return entry.isFile() ? entry : undefined;
-        } finally {
-          await closeFd(fd).catch(() => undefined);
-        }
+        return darwinArtifactEntry(entry);
       },
       async link(sourceName, destinationName) {
         if (libc.linkat(finalParentFd, sourceName, finalParentFd, destinationName, 0) === 0) {
@@ -142,6 +137,7 @@ interface DarwinLibc {
   open(path: string, flags: number, mode?: number): number;
   openat(fd: number, path: string, flags: number, mode?: number): number;
   mkdirat(fd: number, path: string, mode: number): number;
+  fstatat(fd: number, path: string, stat: DarwinStat, flags: number): number;
   linkat(oldFd: number, oldPath: string, newFd: number, newPath: string, flags: number): number;
   unlinkat(fd: number, path: string, flags: number): number;
   dup(fd: number): number;
@@ -149,6 +145,32 @@ interface DarwinLibc {
   readdir(dir: unknown): unknown;
   closedir(dir: unknown): number;
   DIRENT: ReturnType<typeof koffi.struct>;
+}
+
+interface DarwinTimespec {
+  tv_sec?: number | bigint;
+  tv_nsec?: number | bigint;
+}
+
+interface DarwinStat {
+  st_dev?: number;
+  st_mode?: number;
+  st_nlink?: number;
+  st_ino?: number | bigint;
+  st_uid?: number;
+  st_gid?: number;
+  st_rdev?: number;
+  st_atimespec?: DarwinTimespec;
+  st_mtimespec?: DarwinTimespec;
+  st_ctimespec?: DarwinTimespec;
+  st_birthtimespec?: DarwinTimespec;
+  st_size?: number | bigint;
+  st_blocks?: number | bigint;
+  st_blksize?: number;
+  st_flags?: number;
+  st_gen?: number;
+  st_lspare?: number;
+  st_qspare?: Array<number | bigint>;
 }
 
 let cachedDarwinLibc: DarwinLibc | undefined;
@@ -162,6 +184,30 @@ function createDarwinLibc(): DarwinLibc {
   const libc = koffi.load("/usr/lib/libSystem.B.dylib");
   const open = libc.func("int open(const char *path, int flags, ...)");
   const openat = libc.func("int openat(int fd, const char *path, int flags, ...)");
+  const TIMESPEC = koffi.struct("DevSpaceArtifactDarwinTimespec", {
+    tv_sec: "int64_t",
+    tv_nsec: "int64_t",
+  });
+  const STAT = koffi.struct("DevSpaceArtifactDarwinStat", {
+    st_dev: "int32_t",
+    st_mode: "uint16_t",
+    st_nlink: "uint16_t",
+    st_ino: "uint64_t",
+    st_uid: "uint32_t",
+    st_gid: "uint32_t",
+    st_rdev: "int32_t",
+    st_atimespec: TIMESPEC,
+    st_mtimespec: TIMESPEC,
+    st_ctimespec: TIMESPEC,
+    st_birthtimespec: TIMESPEC,
+    st_size: "int64_t",
+    st_blocks: "int64_t",
+    st_blksize: "int32_t",
+    st_flags: "uint32_t",
+    st_gen: "uint32_t",
+    st_lspare: "int32_t",
+    st_qspare: koffi.array("int64_t", 2),
+  });
   const DIR = koffi.opaque("DevSpaceArtifactDarwinDIR");
   const DIR_PTR = koffi.pointer(DIR);
   const DIRENT = koffi.struct("DevSpaceArtifactDarwinDirent", {
@@ -184,6 +230,11 @@ function createDarwinLibc(): DarwinLibc {
         : openat(fd, path, flags, "int", mode);
     },
     mkdirat: libc.func("mkdirat", "int", ["int", "str", "uint32_t"]),
+    fstatat: libc.func(
+      "fstatat",
+      "int",
+      ["int", "str", koffi.out(koffi.pointer(STAT)), "int"],
+    ),
     linkat: libc.func("linkat", "int", ["int", "str", "int", "str", "int"]),
     unlinkat: libc.func("unlinkat", "int", ["int", "str", "int"]),
     dup: libc.func("dup", "int", ["int"]),
@@ -192,6 +243,29 @@ function createDarwinLibc(): DarwinLibc {
     closedir: libc.func("closedir", "int", [DIR_PTR]),
     DIRENT,
   } as DarwinLibc;
+}
+
+function darwinArtifactEntry(entry: DarwinStat): ArtifactEntry | undefined {
+  const mode = entry.st_mode ?? 0;
+  if ((mode & S_IFMT) !== S_IFREG) return undefined;
+
+  const mtime = entry.st_mtimespec;
+  if (!mtime) {
+    throw new ArtifactError(
+      "artifact_entry_unsafe",
+      "Artifact entry metadata was incomplete.",
+    );
+  }
+
+  return {
+    dev: Number(entry.st_dev ?? 0),
+    ino: Number(entry.st_ino ?? 0),
+    size: Number(entry.st_size ?? 0),
+    uid: Number(entry.st_uid ?? 0),
+    mtimeMs:
+      (Number(mtime.tv_sec ?? 0) * 1_000)
+      + (Number(mtime.tv_nsec ?? 0) / 1_000_000),
+  };
 }
 
 async function listDirectoryEntries(
