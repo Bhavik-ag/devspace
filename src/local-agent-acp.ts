@@ -164,15 +164,18 @@ export class AcpRuntime implements LocalAgentRuntime {
           : undefined;
         try {
           queue.values.length = 0;
-          let cancellation: Promise<true> | undefined;
+          let cancellation: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
           const cancelPrompt = () => {
             cancellation ??= Promise.resolve().then(async () => {
               if (!this.connection.cancel) throw new Error(`${this.provider} ACP cancellation is unavailable.`);
               await this.connection.cancel({ sessionId });
-              return true as const;
-            });
+            }).then(
+              () => ({ ok: true as const }),
+              (error: unknown) => ({ ok: false as const, error }),
+            );
           };
           input.signal?.addEventListener("abort", cancelPrompt, { once: true });
+          if (input.signal?.aborted) cancelPrompt();
           const standardResponse = this.connection.agent.request("session/prompt", {
             sessionId,
             prompt: [{ type: "text", text: input.prompt }],
@@ -185,10 +188,18 @@ export class AcpRuntime implements LocalAgentRuntime {
                 ? await Promise.race([standardResponse, completion])
                 : await standardResponse;
             } catch (error) {
-              if (input.signal?.aborted && (await cancellation)) throw abortError();
+              if (input.signal?.aborted && cancellation) {
+                const outcome = await cancellation;
+                if (!outcome.ok) throw outcome.error;
+                throw abortError();
+              }
               throw error;
             }
-            if (input.signal?.aborted && (await cancellation)) throw abortError();
+            if (input.signal?.aborted && cancellation) {
+              const outcome = await cancellation;
+              if (!outcome.ok) throw outcome.error;
+              throw abortError();
+            }
           } finally {
             input.signal?.removeEventListener("abort", cancelPrompt);
           }

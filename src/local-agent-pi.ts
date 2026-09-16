@@ -86,19 +86,31 @@ export class PiSessionRuntime implements LocalAgentRuntime {
         this.events = [];
         const messageStart = this.session.messages.length;
         this.collectingEvents = true;
-        let abort: Promise<true> | undefined;
+        let abort: Promise<{ ok: true } | { ok: false; error: unknown }> | undefined;
         const onAbort = () => {
-          abort ??= Promise.resolve().then(() => this.session.abort()).then(() => true as const);
+          abort ??= Promise.resolve().then(() => this.session.abort()).then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
         };
         input.signal?.addEventListener("abort", onAbort, { once: true });
+        if (input.signal?.aborted) onAbort();
         try {
           try {
             await this.session.prompt(input.prompt);
           } catch (error) {
-            if (input.signal?.aborted && (await abort)) throw abortError();
+            if (input.signal?.aborted && abort) {
+              const outcome = await abort;
+              if (!outcome.ok) throw outcome.error;
+              throw abortError();
+            }
             throw error;
           }
-          if (input.signal?.aborted && (await abort)) throw abortError();
+          if (input.signal?.aborted && abort) {
+            const outcome = await abort;
+            if (!outcome.ok) throw outcome.error;
+            throw abortError();
+          }
         } finally {
           input.signal?.removeEventListener("abort", onAbort);
           this.collectingEvents = false;

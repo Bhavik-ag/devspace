@@ -65,8 +65,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     turn += 1;
     const turnId = "turn_" + turn;
     output({ id: message.id, result: { turn: { id: turnId } } });
-    if (message.params.input[0].text === "cancel") {
-      pendingTurn = { threadId: message.params.threadId, turnId };
+    if (message.params.input[0].text === "cancel" || message.params.input[0].text === "cancel-fail") {
+      pendingTurn = { threadId: message.params.threadId, turnId, failInterrupt: message.params.input[0].text === "cancel-fail" };
       return;
     }
     setImmediate(() => {
@@ -87,6 +87,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "turn/interrupt") {
+    if (pendingTurn?.failInterrupt) {
+      output({ id: message.id, error: { code: -32000, message: "fake interrupt failure" } });
+      pendingTurn = undefined;
+      return;
+    }
     output({ id: message.id, result: {} });
     if (pendingTurn) {
       output({ method: "turn/completed", params: { threadId: pendingTurn.threadId, turn: { id: pendingTurn.turnId, status: "interrupted", items: [] } } });
@@ -97,7 +102,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 `, { mode: 0o700 });
   await chmod(command, 0o700);
 
-  const runtime = new CodexAppServerRuntime({ command, env: process.env });
+  const interruptErrors: unknown[] = [];
+  const runtime = new CodexAppServerRuntime({ command, env: process.env, onInterruptError: (error) => { interruptErrors.push(error); } });
   try {
     await runtime.initialize();
     let callbackSessionId: string | undefined;
@@ -170,6 +176,19 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     assert.equal(cancelledResult.isErr(), true);
     if (cancelledResult.isErr()) assert.equal(cancelledResult.error.code, "PROVIDER_CANCELLED");
     assert.equal(runtime.isAlive(), true, "turn cancellation keeps the shared Codex runtime alive");
+    const failedInterruptController = new AbortController();
+    const failedInterrupt = runtime.run({
+      prompt: "cancel-fail",
+      workspaceRoot: "/tmp/project",
+      providerSessionId: first.providerSessionId ?? undefined,
+      signal: failedInterruptController.signal,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    failedInterruptController.abort();
+    const failedInterruptResult = await failedInterrupt;
+    assert.equal(failedInterruptResult.isErr(), true);
+    if (failedInterruptResult.isErr()) assert.equal(failedInterruptResult.error.code, "PROVIDER_EXECUTION_ERROR");
+    assert.equal(interruptErrors.length, 1);
     const afterCancellation = await runtime.run({
       prompt: "after cancellation",
       workspaceRoot: "/tmp/project",

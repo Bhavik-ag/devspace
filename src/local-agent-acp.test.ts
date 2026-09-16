@@ -304,6 +304,54 @@ assert.equal(acpCancelCalls, 1);
 assert.equal(cancelRuntime.isAlive(), true, "ACP turn cancellation keeps the runtime alive");
 await cancelRuntime.close();
 
+const failedCancelQueues = new Map<string, { values: unknown[] }>();
+let completeFailedCancelPrompt!: () => void;
+let markFailedCancelPromptEntered!: () => void;
+const failedCancelPromptEntered = new Promise<void>((resolve) => { markFailedCancelPromptEntered = resolve; });
+const failedCancelPromptCompletion = new Promise<void>((resolve) => { completeFailedCancelPrompt = resolve; });
+const failedCancelRuntime = new AcpRuntime({
+  provider: "cursor",
+  command: "cursor-agent",
+  args: ["acp"],
+  env: {},
+  queues: failedCancelQueues,
+}, {
+  agent: {
+    async request(method: string): Promise<unknown> {
+      if (method === "session/new") {
+        failedCancelQueues.set("failed_cancel_session", { values: [] });
+        return { sessionId: "failed_cancel_session" };
+      }
+      if (method === "session/prompt") {
+        markFailedCancelPromptEntered();
+        await failedCancelPromptCompletion;
+        return { stopReason: "cancelled" };
+      }
+      return {};
+    },
+  },
+  async cancel() { throw new Error("ACP cancel failed"); },
+  close() {},
+  closed: new Promise<void>(() => undefined),
+});
+const failedAcpController = new AbortController();
+const failedAcpTurn = failedCancelRuntime.run({
+  prompt: "cancel failure",
+  workspaceRoot: "/tmp/project",
+  signal: failedAcpController.signal,
+});
+await failedCancelPromptEntered;
+failedAcpController.abort();
+await new Promise<void>((resolve) => setImmediate(resolve));
+completeFailedCancelPrompt();
+const failedAcpResult = await failedAcpTurn;
+assert.equal(failedAcpResult.isErr(), true);
+if (failedAcpResult.isErr()) {
+  assert.equal(failedAcpResult.error.code, "PROVIDER_EXECUTION_ERROR");
+  assert.match(String(failedAcpResult.error.cause), /ACP cancel failed/);
+}
+await failedCancelRuntime.close();
+
 const cachedContext = {
   agentId: "agt_acp",
   provider: "cursor" as const,

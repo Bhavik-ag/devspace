@@ -190,3 +190,38 @@ if (cancelledPiResult.isErr()) assert.equal(cancelledPiResult.error.code, "PROVI
 assert.equal(cancelPiSession.abortCalls, 1);
 assert.equal(cancelPiRuntime.value.isAlive(), true);
 await cancelPiRuntime.value.close();
+
+let releaseFailedPiPrompt!: () => void;
+let markFailedPiPromptReady!: () => void;
+const failedPiPromptReady = new Promise<void>((resolve) => { markFailedPiPromptReady = resolve; });
+const failedPiPrompt = new Promise<void>((resolve) => { releaseFailedPiPrompt = resolve; });
+class FailedCancelPiSession extends FakePiSession {
+  override async prompt(): Promise<void> {
+    markFailedPiPromptReady();
+    await failedPiPrompt;
+  }
+
+  override async abort(): Promise<void> {
+    throw new Error("Pi abort failed");
+  }
+}
+const failedCancelPiRuntime = await new PiLocalAgentDriver(async () => new FailedCancelPiSession()).createRuntime(context);
+assert.equal(failedCancelPiRuntime.isOk(), true);
+if (failedCancelPiRuntime.isErr()) throw failedCancelPiRuntime.error;
+const failedPiController = new AbortController();
+const failedPiTurn = failedCancelPiRuntime.value.run({
+  prompt: "cancel failure",
+  workspaceRoot: "/tmp/project",
+  signal: failedPiController.signal,
+});
+await failedPiPromptReady;
+failedPiController.abort();
+await new Promise<void>((resolve) => setImmediate(resolve));
+releaseFailedPiPrompt();
+const failedPiResult = await failedPiTurn;
+assert.equal(failedPiResult.isErr(), true);
+if (failedPiResult.isErr()) {
+  assert.equal(failedPiResult.error.code, "PROVIDER_EXECUTION_ERROR");
+  assert.match(String(failedPiResult.error.cause), /Pi abort failed/);
+}
+await failedCancelPiRuntime.value.close();

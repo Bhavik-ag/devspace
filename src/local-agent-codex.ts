@@ -395,7 +395,7 @@ class CodexAppServerRpc {
         .then(() => this.request("turn/interrupt", { threadId, turnId }))
         .catch((error) => {
           this.onInterruptError(error);
-          return undefined;
+          turn.reject(error instanceof Error ? error : new Error(errorMessage(error)));
         });
     };
     signal?.addEventListener("abort", onAbort, { once: true });
