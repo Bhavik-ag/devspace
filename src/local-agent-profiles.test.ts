@@ -73,6 +73,19 @@ try {
   assert.equal(profiles[0]?.effort, "high");
   assert.equal(profiles[0]?.writeMode, "read_only");
   assert.equal(profiles[0]?.body, "Project body.");
+  for (const [name, value] of [
+    ["boolean", "true"],
+    ["number", "1"],
+    ["object", "{ mode: read_only }"],
+    ["array", "[read_only]"],
+  ]) {
+    await writeFile(
+      join(workspaceRoot, ".devspace", "agents", `invalid-write-mode-${name}.md`),
+      `---\nname: invalid-${name}\ndescription: Invalid write mode.\nprovider: codex\nwriteMode: ${value}\n---\nBody.\n`,
+    );
+  }
+  const profilesWithoutInvalidWriteModes = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
+  assert.deepEqual(profilesWithoutInvalidWriteModes.map((profile) => profile.name), ["reviewer"]);
   await writeFile(
     join(workspaceRoot, ".devspace", "agents", "custom.md"),
     [

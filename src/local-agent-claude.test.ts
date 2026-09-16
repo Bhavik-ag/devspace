@@ -127,6 +127,18 @@ const third = await runtime.run({
   writeMode: "full_access",
 });
 assert.equal(third.isOk(), true);
+const preAborted = new AbortController();
+preAborted.abort();
+const rejectedBeforeSubmission = await runtime.run({
+  prompt: "cancelled-before-submission",
+  workspaceRoot: "/tmp/project",
+}, undefined, { signal: preAborted.signal });
+assert.equal(rejectedBeforeSubmission.isErr(), true);
+if (rejectedBeforeSubmission.isErr()) assert.equal(rejectedBeforeSubmission.error.code, "PROVIDER_CANCELLED");
+const afterRejectedSubmission = await runtime.run({ prompt: "after-cancel", workspaceRoot: "/tmp/project" });
+assert.equal(afterRejectedSubmission.isOk(), true);
+if (afterRejectedSubmission.isErr()) throw afterRejectedSubmission.error;
+assert.equal(afterRejectedSubmission.value.finalResponse, "response:after-cancel");
 assert.equal(factoryCalls, 1, "successive turns reuse one Claude query");
 assert.equal(first.providerSessionId, "claude_session_1");
 assert.equal(second.finalResponse, "response:second");
@@ -185,8 +197,8 @@ assert.deepEqual(usageUpdates, [{
   cacheWriteTokens: 2,
   final: true,
 }]);
-assert.deepEqual(query?.permissionModes, ["dontAsk", "dontAsk", "bypassPermissions"]);
-assert.equal(query?.flagSettings.length, 3);
+assert.deepEqual(query?.permissionModes, ["dontAsk", "dontAsk", "bypassPermissions", "dontAsk", "dontAsk"]);
+assert.equal(query?.flagSettings.length, 5);
 assert.equal(query?.flagSettings[0]?.alwaysThinkingEnabled, true);
 assert.equal(query?.flagSettings[0]?.effortLevel, "high");
 assert.equal(

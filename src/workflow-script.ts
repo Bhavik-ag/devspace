@@ -27,8 +27,20 @@ export function parseWorkflowScript(
   }
 
   const file = ts.createSourceFile(filename, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
-  const parseDiagnostics = (file as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
-  const diagnostic = parseDiagnostics[0];
+  const compilerOptions: ts.CompilerOptions = {
+    allowJs: true,
+    noEmit: true,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.ES2022,
+    module: ts.ModuleKind.ESNext,
+  };
+  const host = ts.createCompilerHost(compilerOptions);
+  host.getSourceFile = (requested) => requested === filename ? file : undefined;
+  host.fileExists = (requested) => requested === filename;
+  host.readFile = (requested) => requested === filename ? source : undefined;
+  host.writeFile = () => undefined;
+  const diagnostic = ts.createProgram([filename], compilerOptions, host).getSyntacticDiagnostics(file)[0];
   if (diagnostic) {
     const start = diagnostic.start ?? 0;
     throw new WorkflowScriptError(
@@ -101,7 +113,11 @@ export function renameWorkflowMeta(source: string, newName: string, filename = "
   }
   const file = ts.createSourceFile(filename, source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
   const statement = file.statements[0] as ts.VariableStatement;
-  const initializer = statement.declarationList.declarations[0]!.initializer as ts.ObjectLiteralExpression;
+  let initializer = statement.declarationList.declarations[0]!.initializer!;
+  while (ts.isParenthesizedExpression(initializer)) initializer = initializer.expression;
+  if (!ts.isObjectLiteralExpression(initializer)) {
+    throw new WorkflowScriptError("WORKFLOW_META_INVALID", "Workflow metadata must be an object literal.");
+  }
   const property = initializer.properties.find((candidate) =>
     ts.isPropertyAssignment(candidate) && propertyName(file, candidate.name) === "name");
   if (!property || !ts.isPropertyAssignment(property)) {

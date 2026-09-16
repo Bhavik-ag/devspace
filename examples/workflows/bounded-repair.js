@@ -14,7 +14,7 @@ for (let attempt = 1; attempt <= 3; attempt++) {
       required: ["passed", "feedback"], additionalProperties: false
     }
   });
-  if (result.passed) return result;
-  feedback = result.feedback;
+  if (result?.passed) return result;
+  feedback = result?.feedback ?? feedback;
 }
 return { passed: false, feedback };

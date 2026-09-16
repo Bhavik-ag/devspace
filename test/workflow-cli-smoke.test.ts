@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, access } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
@@ -10,7 +11,7 @@ import { writeDevspaceConfig } from "../src/user-config.js";
 const execute = promisify(execFile);
 // Run after compiling dist. No installation and no live provider credentials are needed.
 test("compiled CLI coordinates a real daemon, adapter process, managed worktree, and persisted replay", { skip: process.platform === "win32" }, async () => {
-  const root = await realpath(await mkdtemp("/tmp/devspace-workflow-package-"));
+  const root = await realpath(await mkdtemp(join(tmpdir(), "devspace-workflow-package-")));
   const project = join(root, "project");
   const configDir = join(root, "config");
   await mkdir(project);

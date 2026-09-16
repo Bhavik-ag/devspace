@@ -19,6 +19,9 @@ assert.doesNotMatch(parsed.body, /export const meta/);
 const renamed = renameWorkflowMeta(valid, "verify-code");
 assert.equal(parseWorkflowScript(renamed).meta.name, "verify-code");
 assert.match(renamed, /description: "Review\\ncode"/);
+const parenthesized = `export const meta = ({ name: 'old-name', description: 'Parenthesized' })\nreturn null`;
+const renamedParenthesized = renameWorkflowMeta(parenthesized, "new-name");
+assert.equal(parseWorkflowScript(renamedParenthesized).meta.name, "new-name");
 
 for (const source of [
   `export const meta = makeMeta()\nreturn null`,

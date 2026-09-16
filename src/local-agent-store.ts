@@ -493,7 +493,7 @@ export class LocalAgentStore {
         .prepare(
           `update local_agent_turns
            set status = 'failed', error = ?, error_code = 'DAEMON_UNAVAILABLE',
-               error_retryable = 'true', completed_at = ?
+               error_retryable = 'true', execution_uncertain = 'true', completed_at = ?
            where status = 'running'`,
         )
         .run(message, now);

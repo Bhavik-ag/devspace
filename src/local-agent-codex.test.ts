@@ -66,7 +66,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     const turnId = "turn_" + turn;
     output({ id: message.id, result: { turn: { id: turnId } } });
     active.set(turnId, { threadId: message.params.threadId, prompt: message.params.input[0].text });
-    if (message.params.input[0].text === "hold" || message.params.input[0].text === "ignore interrupt") return;
+    if (message.params.input[0].text === "ignore interrupt") {
+      output({ method: "item/started", params: { threadId: message.params.threadId, turnId, item: { type: "commandExecution" } } });
+      return;
+    }
+    if (message.params.input[0].text === "hold") return;
     setImmediate(() => {
       if (message.params.input[0].text === "fail") {
         output({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: turnId, status: "failed", error: { message: "fake failure" } } } });
@@ -108,6 +112,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const runtime = new CodexAppServerRuntime({ command, env: process.env });
   try {
     await runtime.initialize();
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const rejectedBeforeTurn = await runtime.run({
+      prompt: "cancelled-before-turn",
+      workspaceRoot: "/tmp/project",
+    }, undefined, { signal: preAborted.signal });
+    assert.equal(rejectedBeforeTurn.isErr(), true);
+    if (rejectedBeforeTurn.isErr()) assert.equal(rejectedBeforeTurn.error.code, "PROVIDER_CANCELLED");
     let callbackSessionId: string | undefined;
     const usageUpdates: unknown[] = [];
     const firstResult = await runtime.run({
@@ -212,16 +224,18 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     assert.equal(cancelled.isErr(), true);
     if (cancelled.isErr()) assert.equal(cancelled.error.code, "PROVIDER_CANCELLED");
     const ignoredController = new AbortController();
+    let ignoredTurnStarted!: () => void;
+    const ignoredTurnStart = new Promise<void>((resolve) => { ignoredTurnStarted = resolve; });
     const ignored = runtime.run({
       prompt: "ignore interrupt",
       workspaceRoot: "/tmp/project",
       providerSessionId: first.providerSessionId ?? undefined,
-    }, undefined, { signal: ignoredController.signal });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    }, { onProgress: () => { ignoredTurnStarted(); } }, { signal: ignoredController.signal });
+    await ignoredTurnStart;
     ignoredController.abort();
     const lateSuccess = await ignored;
-    assert.equal(lateSuccess.isOk(), true, "an abort signal alone must not overwrite the provider's terminal result");
     if (lateSuccess.isErr()) throw lateSuccess.error;
+    assert.equal(lateSuccess.isOk(), true, "an abort signal alone must not overwrite the provider's terminal result");
     assert.equal(lateSuccess.value.finalResponse, "late success");
     await runtime.releaseSession("thread_new");
   } finally {

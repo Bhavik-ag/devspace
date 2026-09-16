@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, realpath, writeFile } from "node:fs/promises";
+import { mkdir, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { resolvePathInsideCanonicalRoot } from "./roots.js";
 import type { WorkflowsConfig } from "./workflow-config.js";
@@ -22,7 +22,7 @@ import type {
   WorkflowRuntimeLimits,
 } from "./workflow-types.js";
 import type { WorkflowReply, WorkflowRequest, WorkflowScope } from "./workflow-protocol.js";
-import { WorkflowRegistry } from "./workflow-registry.js";
+import { WorkflowRegistry, type WorkflowDiscoveryResult } from "./workflow-registry.js";
 import {
   WorkflowStore,
   type WorkflowError,
@@ -93,6 +93,7 @@ interface ActiveRun {
   stopRequested: boolean;
   activeClock: ActiveTimeClock;
   waitingUsageAttempts: number;
+  workflowDiscovery?: Promise<WorkflowDiscoveryResult>;
 }
 
 interface LiveStep {
@@ -208,10 +209,13 @@ export class WorkflowManager {
     }
     const sourceRun = input.resumeFromRunId ? this.requireRun(scope, input.resumeFromRunId) : undefined;
     if (sourceRun?.state === "recovery_required") {
-      const hasKnownLiveTurn = this.store.listAttemptsForRun(sourceRun.id)
-        .some((attempt) => this.agentStore.getTurnById(attempt.agentTurnId)?.status === "running");
-      if (hasKnownLiveTurn) throw workflowFailure("WORKFLOW_BUSY",
-        "The source workflow still has a live provider turn; recover or stop it before resuming.", true);
+      const hasUnconfirmedTurn = this.store.listAttemptsForRun(sourceRun.id)
+        .some((attempt) => {
+          const turn = this.agentStore.getTurnById(attempt.agentTurnId);
+          return turn?.status === "running" || turn?.executionUncertain === true;
+        });
+      if (hasUnconfirmedTurn) throw workflowFailure("WORKFLOW_BUSY",
+        "The source workflow has a provider turn whose termination is unconfirmed; reconcile it before resuming.", true);
     }
     const defaults = compactJson({
       ...(sourceRun?.defaults ?? {}),
@@ -805,7 +809,7 @@ export class WorkflowManager {
   private async nested(context: RuntimeContext, request: WorkflowNestedRequest, bridge: WorkflowBridgeContext): Promise<WorkflowBridgeReply> {
     if (context.depth >= 1) throw workflowFailure("NESTING_LIMIT", "Nested workflows are limited to one child level.");
     const definition = typeof request.reference === "string"
-      ? await this.registry.resolveName(context.scope.workspaceRoot, request.reference)
+      ? await this.resolveNestedName(context, request.reference)
       : await this.registry.resolvePath(context.scope.workspaceRoot, request.reference.scriptPath,
           context.run.sourcePath ? dirname(context.run.sourcePath) : context.scope.workspaceRoot);
     await preflightWorkflowScript(definition.parsed, { limits: runtimeLimits(this.config) });
@@ -846,6 +850,13 @@ export class WorkflowManager {
       this.store.transitionStep(step.id, "failed", { error: toWorkflowError(error, context.run.id, step.id) });
       throw error;
     }
+  }
+
+  private async resolveNestedName(context: RuntimeContext, name: string) {
+    context.active.workflowDiscovery ??= this.registry.discover(context.scope.workspaceRoot);
+    const definition = (await context.active.workflowDiscovery).definitions.find((item) => item.name === name);
+    if (!definition) throw new Error(`WORKFLOW_NOT_FOUND: ${name}`);
+    return definition;
   }
 
   private runtimeEvent(context: RuntimeContext, event: WorkflowRuntimeEvent): void {
@@ -1010,7 +1021,10 @@ export class WorkflowManager {
       type: "export_truncated", payload: { limit: this.config.limits.eventsPerRun } }));
     const journalText = lines.join("\n") + (lines.length ? "\n" : "");
     const journal = await this.writeExport(run, "journal.jsonl", journalText);
-    if (run.result === undefined) return { journal };
+    if (run.result === undefined) {
+      this.store.setResultArtifactId(run.id, journal.id);
+      return { journal };
+    }
     const result = await this.writeExport(run, "result.json", `${JSON.stringify(run.result)}\n`);
     this.store.setResultArtifactId(run.id, result.id);
     return { journal, result };
@@ -1047,7 +1061,9 @@ export class WorkflowManager {
     let exports: Awaited<ReturnType<WorkflowManager["exportRunArtifacts"]>> | undefined;
     let exportWarning: JsonObject | undefined;
     if (TERMINAL_STATES.has(run.state)) {
-      try { exports = await this.exportRunArtifacts(run); }
+      try { exports = run.resultArtifactId
+        ? await this.existingRunArtifacts(run)
+        : await this.exportRunArtifacts(run); }
       catch (error) { exportWarning = { code: "ARTIFACT_EXPORT_FAILED", message: errorMessage(error) }; }
     }
     const largeResult = run.result !== undefined && jsonByteLength(run.result) > 64 * 1024;
@@ -1095,6 +1111,27 @@ export class WorkflowManager {
       transcript: exports ? { directory: dirname(exports.journal.path), journal: exports.journal } : undefined,
       events,
     } as unknown as JsonObject);
+  }
+
+  private async existingRunArtifacts(run: WorkflowRunRecord): Promise<{
+    journal: { id: string; path: string; bytes: number };
+    result?: { id: string; path: string; bytes: number };
+  }> {
+    const journal = await this.exportReference(run, "journal.jsonl");
+    const result = run.result === undefined ? undefined : await this.exportReference(run, "result.json");
+    return { journal, ...(result ? { result } : {}) };
+  }
+
+  private async exportReference(run: WorkflowRunRecord, filename: string): Promise<{
+    id: string; path: string; bytes: number;
+  }> {
+    const canonicalRoot = await realpath(run.workspaceRoot);
+    const path = await resolvePathInsideCanonicalRoot(
+      join(".devspace", "workflows", "runs", run.id, filename),
+      canonicalRoot, canonicalRoot, canonicalRoot,
+    );
+    const { size } = await stat(path);
+    return { id: `workflow:${run.id}:${filename}`, path, bytes: size };
   }
 
   private changeRun(

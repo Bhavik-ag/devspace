@@ -162,7 +162,12 @@ function readWriteMode(
   frontmatter: Record<string, unknown>,
   filePath: string,
 ): LocalAgentWriteMode | undefined {
-  const value = readString(frontmatter, "writeMode");
+  const raw = frontmatter.writeMode;
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string") {
+    throw new Error(`Subagent profile writeMode must be a string: ${filePath}`);
+  }
+  const value = raw.trim();
   if (!value) return undefined;
   if (value === "read_only" || value === "allowed" || value === "full_access") return value;
   throw new Error(`Subagent profile writeMode must be read_only, allowed, or full_access: ${filePath}`);

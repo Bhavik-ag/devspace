@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -23,6 +23,7 @@ import { LocalAgentStore } from "./local-agent-store.js";
 import type { SubagentsConfig } from "./local-agent-config.js";
 import { createWorkflowManager } from "./workflow-manager.js";
 import type { WorkflowReply, WorkflowRequest, WorkflowScope } from "./workflow-protocol.js";
+import { WorkflowRegistry } from "./workflow-registry.js";
 import { WorkflowStore } from "./workflow-store.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-workflow-manager-"));
@@ -93,11 +94,20 @@ const agents = new LocalAgentManager({
   validateWorkspaceScope: ({ workspaceRoot }) => workspaceRoot,
 });
 const workflowStore = new WorkflowStore(database);
+class CountingWorkflowRegistry extends WorkflowRegistry {
+  discoveries = 0;
+  override async discover(workspaceRoot: string) {
+    this.discoveries += 1;
+    return super.discover(workspaceRoot);
+  }
+}
+const workflowRegistry = new CountingWorkflowRegistry();
 let worktrees = 0;
 const workflowsConfig = { ...defaultWorkflowsConfig(), enabled: true, defaultAgentType: "reviewer", maxConcurrentRuns: 1 };
 const manager = createWorkflowManager({
   stateDir, agents, agentStore, store: workflowStore,
   config: workflowsConfig,
+  registry: workflowRegistry,
   validateScope: async (candidate) => {
     assert.deepEqual(candidate, scope);
     return candidate;
@@ -134,6 +144,11 @@ return await agent('inspect', { schema: {
   const exportDir = join(root, ".devspace", "workflows", "runs", first.runId);
   assert.equal(JSON.parse(await readFile(join(exportDir, "result.json"), "utf8")).ok, true);
   assert.match(await readFile(join(exportDir, "journal.jsonl"), "utf8"), /"type":"run_state"/);
+  const journalMtime = (await stat(join(exportDir, "journal.jsonl"))).mtimeMs;
+  await delay(20);
+  assert.equal((await manager.request({ operation: "get", scope, input: { runId: first.runId } })).ok, true);
+  assert.equal((await stat(join(exportDir, "journal.jsonl"))).mtimeMs, journalMtime,
+    "terminal observations reuse the exported journal");
 
   const callCount = calls.length;
   const resumed = await run(`
@@ -240,6 +255,7 @@ return await workflow('child')`, { resumeFromRunId: nested.runId });
 export const meta = { name: 'queued-child', description: 'Nested queue child' }
 return await agent(args.prompt)`);
   const nestedQueueCallCount = calls.length;
+  const nestedQueueDiscoveries = workflowRegistry.discoveries;
   const queuedNested = await run(`
 export const meta = { name: 'queued-parent', description: 'Nested queue parent' }
 return await parallel([
@@ -253,6 +269,8 @@ return await parallel([
     await delay(5);
   }
   assert.equal(calls.length, nestedQueueCallCount + 1, "only the child holding the nested slot dispatches an agent");
+  assert.equal(workflowRegistry.discoveries, nestedQueueDiscoveries + 1,
+    "parallel nested name lookups share one discovery snapshot per run");
   const queuedStop = await manager.request({ operation: "control", scope,
     input: { runId: queuedNested.runId, action: "stop" } });
   assert.equal(queuedStop.ok, true);
@@ -426,6 +444,9 @@ return await agent('hold-stop')`);
     agentId: recoveringAgent.id, agentTurnId: recoveringTurn.id, reason: "initial" });
   workflowStore.transitionAttempt(recoveringAttempt.id, "running");
   workflowStore.markActiveAttemptsUncertain();
+  agentStore.reconcileActiveRuns();
+  assert.equal(agentStore.getTurnById(recoveringTurn.id)?.status, "failed");
+  assert.equal(agentStore.getTurnById(recoveringTurn.id)?.executionUncertain, true);
   const blockedResume = await manager.request({ operation: "run", scope, input: { resumeFromRunId: recovering.id,
     script: `export const meta = { name: 'recovering', description: 'known live turn' }\nreturn null` } });
   assert.equal(blockedResume.ok, false);

@@ -266,7 +266,10 @@ if (rateLimited.isErr()) {
 }
 
 let timeoutAbortCount = 0;
+let timeoutPromptCount = 0;
 let rejectOpenCodePrompt: ((error: Error) => void) | undefined;
+let fenceTimeoutAbort = false;
+let finishTimeoutAbort: (() => void) | undefined;
 const timeoutClient = {
   global: {
     async health() { return { data: { healthy: true } }; },
@@ -274,6 +277,7 @@ const timeoutClient = {
   session: {
     async create() { return { data: { id: "session_timeout" } }; },
     async prompt(_input: unknown, options?: { signal?: AbortSignal }) {
+      timeoutPromptCount += 1;
       return new Promise<never>((_resolve, reject) => {
         rejectOpenCodePrompt = reject;
         options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
@@ -281,16 +285,34 @@ const timeoutClient = {
     },
     async abort() {
       timeoutAbortCount += 1;
+      if (fenceTimeoutAbort) await new Promise<void>((resolve) => { finishTimeoutAbort = resolve; });
       rejectOpenCodePrompt?.(new Error("server stopped the prompt"));
       return { data: true };
     },
   },
 } as unknown as OpencodeClientLike;
+const preAbortedRuntime = new OpencodeRuntime(timeoutClient, { close: () => undefined }, 60_000);
+const preAborted = new AbortController();
+preAborted.abort();
+const rejectedBeforePrompt = await preAbortedRuntime.run({
+  prompt: "do not submit", workspaceRoot: "/tmp/project",
+}, undefined, { signal: preAborted.signal });
+assert.equal(rejectedBeforePrompt.isErr(), true);
+assert.equal(timeoutPromptCount, 0);
+await preAbortedRuntime.close();
+
 const timeoutRuntime = new OpencodeRuntime(timeoutClient, { close: () => undefined }, 5);
-const timedOutPrompt = await timeoutRuntime.run({
+fenceTimeoutAbort = true;
+let timeoutSettled = false;
+const timedOutPromptPromise = timeoutRuntime.run({
   prompt: "never finishes",
   workspaceRoot: "/tmp/project",
-});
+}).then((result) => { timeoutSettled = true; return result; });
+await new Promise<void>((resolve) => setTimeout(resolve, 15));
+assert.equal(timeoutSettled, false, "timeout remains fenced until server-side cancellation settles");
+finishTimeoutAbort?.();
+fenceTimeoutAbort = false;
+const timedOutPrompt = await timedOutPromptPromise;
 assert.equal(timedOutPrompt.isErr(), true);
 if (timedOutPrompt.isErr()) {
   assert.equal(timedOutPrompt.error.code, "PROVIDER_PROTOCOL_ERROR");
@@ -313,6 +335,28 @@ assert.equal(cancelledResult.isErr(), true);
 if (cancelledResult.isErr()) assert.equal(cancelledResult.error.code, "PROVIDER_CANCELLED");
 assert.equal(timeoutAbortCount, 2);
 await cancellableRuntime.close();
+
+const uncertainClient = {
+  global: { async health() { return { data: { healthy: true } }; } },
+  session: {
+    async create() { return { data: { id: "session_uncertain" } }; },
+    async prompt(_input: unknown, options?: { signal?: AbortSignal }) {
+      return new Promise<never>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    },
+    async abort() { throw new Error("cancellation failed"); },
+  },
+} as unknown as OpencodeClientLike;
+const uncertainRuntime = new OpencodeRuntime(uncertainClient, { close: () => undefined }, 5);
+const uncertainTimeout = await uncertainRuntime.run({ prompt: "uncertain", workspaceRoot: "/tmp/project" });
+assert.equal(uncertainTimeout.isErr(), true);
+if (uncertainTimeout.isErr()) {
+  assert.equal(uncertainTimeout.error.retryable, false);
+  assert.equal(uncertainTimeout.error.executionUncertain, true);
+}
+assert.equal(uncertainRuntime.isAlive(), false);
+await uncertainRuntime.close();
 
 assert.equal(opencodeAgentFor("read_only"), "devspace_read_only");
 assert.equal(opencodeAgentFor("full_access"), "devspace_full_access");

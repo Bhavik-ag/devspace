@@ -98,7 +98,10 @@ export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSk
     cwd, agentDir: config.agentDir,
     skillPaths: effectiveSkillPaths(config, cwd), includeDefaults: false,
   });
-  const managedNames = new Set<string>(MANAGED_SKILLS);
+  const managedNames = new Set<string>([
+    "subagents",
+    ...(config.workflows?.enabled ? ["workflows"] : []),
+  ]);
   const managed = enabled.map((name) => {
     const skill = loadSkillsFromDir({ dir: join(config.devspaceSkillsDir, name), source: "devspace" })
       .skills.find((skill) => skill.name === name);

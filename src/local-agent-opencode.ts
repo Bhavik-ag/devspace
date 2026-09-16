@@ -138,6 +138,7 @@ export class OpencodeRuntime implements LocalAgentRuntime {
     input: LocalAgentRunInput,
     signal?: AbortSignal,
   ): Promise<unknown> {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const controller = new AbortController();
     this.promptControllers.add(controller);
     let timedOut = false;
@@ -150,27 +151,39 @@ export class OpencodeRuntime implements LocalAgentRuntime {
         directory: input.workspaceRoot,
       }, { throwOnError: true }).then(() => true, () => false);
     };
-    if (signal?.aborted) cancel();
-    else signal?.addEventListener("abort", cancel, { once: true });
+    signal?.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(() => {
       timedOut = true;
       cancel();
       controller.abort();
     }, this.promptTimeoutMs);
     try {
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
       const result = await promptOpencodeSession(this.client, sessionId, input, controller.signal);
-      if (cancelled && !timedOut && await cancellation) {
-        throw new DOMException("Aborted", "AbortError");
+      if (timedOut) throw new DOMException("Timed out", "TimeoutError");
+      if (cancelled) {
+        const confirmed = await cancellation;
+        if (confirmed) throw new DOMException("Aborted", "AbortError");
+        this.alive = false;
+        throw uncertainOpenCodeCancellation(result);
       }
       return result;
     } catch (error) {
-      if (cancelled && !timedOut && await cancellation) throw new DOMException("Aborted", "AbortError");
+      if (cancelled && !timedOut) {
+        const confirmed = await cancellation;
+        if (confirmed) throw new DOMException("Aborted", "AbortError");
+        this.alive = false;
+        throw uncertainOpenCodeCancellation(error);
+      }
       if (!timedOut) throw error;
+      const confirmed = await cancellation;
+      if (!confirmed) this.alive = false;
       throw new AgentProviderProtocolError({
         code: "PROVIDER_PROTOCOL_ERROR",
         provider: "opencode",
         operation: "prompt",
-        retryable: true,
+        retryable: confirmed === true,
+        executionUncertain: confirmed !== true,
         cause: error,
         message: "OpenCode did not finish the prompt before the provider timeout.",
       });
@@ -180,6 +193,18 @@ export class OpencodeRuntime implements LocalAgentRuntime {
       this.promptControllers.delete(controller);
     }
   }
+}
+
+function uncertainOpenCodeCancellation(cause: unknown): AgentProviderProtocolError {
+  return new AgentProviderProtocolError({
+    code: "PROVIDER_PROTOCOL_ERROR",
+    provider: "opencode",
+    operation: "prompt",
+    retryable: false,
+    executionUncertain: true,
+    cause,
+    message: "OpenCode cancellation could not be confirmed.",
+  });
 }
 
 export class OpencodeLocalAgentDriver implements LocalAgentDriver {

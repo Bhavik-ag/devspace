@@ -31,6 +31,16 @@ assert.deepEqual(localAgentWorkflowEnvironment({ PATH: "/bin" }, {
   DEVSPACE_WORKFLOW_STEP_ID: "wfs_1",
   DEVSPACE_WORKFLOW_ATTEMPT_ID: "wfa_1",
 });
+assert.deepEqual(localAgentWorkflowEnvironment({
+  PATH: "/bin",
+  DEVSPACE_WORKFLOW_RUN_ID: "stale-run",
+  DEVSPACE_WORKFLOW_STEP_ID: "stale-step",
+  DEVSPACE_WORKFLOW_ATTEMPT_ID: "stale-attempt",
+}, {}), { PATH: "/bin" });
+assert.deepEqual(localAgentWorkflowEnvironment({
+  DEVSPACE_WORKFLOW_RUN_ID: "stale-run",
+  DEVSPACE_WORKFLOW_STEP_ID: "stale-step",
+}, { workflowRunId: "current-run" }), { DEVSPACE_WORKFLOW_RUN_ID: "current-run" });
 
 for (const [code, retryable] of [["ENOENT", false], ["ECONNREFUSED", true], ["ENOTFOUND", true]] as const) {
   const classified = await captureAgentProviderResult({

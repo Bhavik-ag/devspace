@@ -127,12 +127,6 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
         await this.query.applyFlagSettings(flagSettings);
         await this.query.setPermissionMode(claudePermissionMode(effectiveWriteMode));
         if (input.model && this.query.setModel) await this.query.setModel(input.model);
-        this.inputQueue.push({
-          type: "user",
-          message: { role: "user", content: input.prompt },
-          parent_tool_use_id: null,
-        });
-
         let cancellation: Promise<boolean> | undefined;
         const abort = () => {
           cancellation ??= this.query.interrupt
@@ -141,6 +135,15 @@ export class ClaudeQueryRuntime implements LocalAgentRuntime {
         };
         if (control?.signal.aborted) throw new DOMException("Aborted", "AbortError");
         control?.signal.addEventListener("abort", abort, { once: true });
+        if (control?.signal.aborted) {
+          control.signal.removeEventListener("abort", abort);
+          throw new DOMException("Aborted", "AbortError");
+        }
+        this.inputQueue.push({
+          type: "user",
+          message: { role: "user", content: input.prompt },
+          parent_tool_use_id: null,
+        });
         const items: unknown[] = [];
         try {
           for (;;) {

@@ -37,6 +37,14 @@ test("workflow daemon transport preserves active runs and allows observation aft
   assert.equal(launch.ok, false, "a changed configuration must not replace a daemon with active workflows");
   assert.equal(spawned, false);
   assert.equal(closed, false);
+  const resumed = await changedConfig.workflow({ operation: "control", scope,
+    input: { runId: "r", action: "resume" } });
+  assert.equal(resumed.ok, false, "resume must use a daemon with the current execution configuration");
+  assert.equal(activeRuns, 1);
+  const restarted = await changedConfig.workflow({ operation: "control", scope,
+    input: { runId: "r", action: "restart_agent", stepId: "step-1" } });
+  assert.equal(restarted.ok, false, "agent restart must use a daemon with the current execution configuration");
+  assert.equal(activeRuns, 1);
   const stopped = await changedConfig.workflow({ operation: "control", scope, input: { runId: "r", action: "stop" } });
   assert.equal(stopped.ok, true);
   assert.equal(activeRuns, 0);

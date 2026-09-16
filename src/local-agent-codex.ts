@@ -415,6 +415,7 @@ class CodexAppServerRpc {
     onEvent?: (event: CodexEvent) => void | Promise<void>,
   ): Promise<CodexTurnResult> {
     if (this.fatalError) throw this.fatalError;
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     if (this.turns.has(threadId)) throw new Error(`Codex thread ${threadId} already has an active turn.`);
     let resolveTurn!: (result: CodexTurnResult) => void;
     let rejectTurn!: (error: Error) => void;

@@ -364,6 +364,9 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
     providerNote,
   );
   assert.ok(Array.isArray(firstStructured.agents));
+  const firstText = (first.content as Array<{ type: string; text?: string }>)
+    .find((item) => item.type === "text");
+  assert.match(firstText?.text ?? "", /reviewer \(codex, write_mode read_only\)/);
   assert.ok(Array.isArray(firstStructured.skill_diagnostics));
   assert.equal("workspaceReused" in firstStructured, false);
   assert.equal("includeBootstrapContext" in firstStructured, false);
@@ -752,6 +755,7 @@ async function fixture(
     "name: reviewer",
     "description: Reviews project changes.",
     "provider: codex",
+    "writeMode: read_only",
     "---",
     "Review changes.",
   ].join("\n"));

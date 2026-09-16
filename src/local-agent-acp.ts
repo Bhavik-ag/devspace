@@ -67,6 +67,7 @@ interface AcpCapabilities {
 
 interface AcpSessionQueue {
   values: unknown[];
+  onValue?: (value: unknown) => void;
 }
 
 export interface AcpRuntimeOptions {
@@ -148,6 +149,7 @@ export class AcpRuntime implements LocalAgentRuntime {
         }
         if (control?.signal.aborted) throw new DOMException("Aborted", "AbortError");
         const sessionId = await this.openSession(input, callbacks);
+        if (control?.signal.aborted) throw new DOMException("Aborted", "AbortError");
         if (this.activeSessions.has(sessionId)) {
           throw new TypeError(`${this.provider} ACP session ${sessionId} already has an active turn.`);
         }
@@ -171,13 +173,29 @@ export class AcpRuntime implements LocalAgentRuntime {
           : undefined;
         try {
           queue.values.length = 0;
+          let progressFailure: unknown;
+          let progressCallbacks = Promise.resolve();
+          queue.onValue = (update) => {
+            const progress = acpProgress(update);
+            if (!progress) return;
+            progressCallbacks = progressCallbacks.then(async () => {
+              if (progressFailure !== undefined) return;
+              try { await callbacks?.onProgress?.(progress); }
+              catch (error) { progressFailure = error; }
+            });
+          };
+          let cancellation: Promise<void> | undefined;
           const cancel = () => {
-            const cancellation = this.connection.agent.cancel
+            cancellation ??= this.connection.agent.cancel
               ? this.connection.agent.cancel({ sessionId })
               : this.connection.agent.request("session/cancel", { sessionId }).then(() => undefined);
             void cancellation.catch(() => undefined);
           };
           control?.signal.addEventListener("abort", cancel, { once: true });
+          if (control?.signal.aborted) {
+            control.signal.removeEventListener("abort", cancel);
+            throw new DOMException("Aborted", "AbortError");
+          }
           const standardResponse = this.connection.agent.request("session/prompt", {
             sessionId,
             prompt: [{ type: "text", text: input.prompt }],
@@ -190,6 +208,7 @@ export class AcpRuntime implements LocalAgentRuntime {
               : await standardResponse;
           } finally {
             control?.signal.removeEventListener("abort", cancel);
+            if (cancellation) await cancellation.catch(() => undefined);
           }
           if (completion && isGrokPromptCompletion(response)) {
             await yieldToAcpQueue();
@@ -197,12 +216,10 @@ export class AcpRuntime implements LocalAgentRuntime {
             this.grokCompletionRegistry?.markCompleted(sessionId, promptId);
           }
           const updates = queue.values.splice(0);
+          await progressCallbacks;
+          if (progressFailure !== undefined) throw progressFailure;
           if (readString(response, "stopReason") === "cancelled") {
             throw new DOMException("Aborted", "AbortError");
-          }
-          for (const update of updates) {
-            const progress = acpProgress(update);
-            if (progress) await callbacks?.onProgress?.(progress);
           }
           const finalResponse = extractAcpText(updates);
           if (!finalResponse) {
@@ -225,6 +242,7 @@ export class AcpRuntime implements LocalAgentRuntime {
             ...(usage ? { usage } : {}),
           };
         } finally {
+          queue.onValue = undefined;
           if (promptId) this.grokCompletionRegistry?.remove(sessionId, promptId);
           this.activeSessions.delete(sessionId);
         }
@@ -903,6 +921,7 @@ function hasAcpConfigOptions(value: unknown): boolean {
 function appendAcpQueueValue(queue: AcpSessionQueue, value: unknown): void {
   if (queue.values.length >= MAX_ACP_QUEUE_ITEMS) queue.values.shift();
   queue.values.push(value);
+  queue.onValue?.(value);
 }
 
 function appendTail(current: string, chunk: string, maxBytes: number): string {

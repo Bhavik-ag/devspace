@@ -301,6 +301,125 @@ if (completedOverlappingTurn.isErr()) throw completedOverlappingTurn.error;
 assert.equal(completedOverlappingTurn.value.finalResponse, "overlap response");
 await overlapRuntime.close();
 
+const liveQueues = new Map<string, { values: unknown[]; onValue?: (value: unknown) => void }>();
+let finishLivePrompt!: () => void;
+const livePromptGate = new Promise<void>((resolve) => { finishLivePrompt = resolve; });
+let progressDelivered!: () => void;
+const liveProgress = new Promise<void>((resolve) => { progressDelivered = resolve; });
+const liveConnection = {
+  agent: {
+    async request(method: string, params?: unknown): Promise<unknown> {
+      const sessionId = (params as { sessionId?: string } | undefined)?.sessionId ?? "live_session";
+      if (method === "session/new") {
+        liveQueues.set(sessionId, { values: [] });
+        return { sessionId };
+      }
+      if (method === "session/prompt") {
+        const update = { update: { sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "live response" } } };
+        const queue = liveQueues.get(sessionId)!;
+        queue.values.push(update);
+        queue.onValue?.(update);
+        await livePromptGate;
+        return { stopReason: "end_turn" };
+      }
+      return {};
+    },
+  },
+  close() {},
+  closed: new Promise<void>(() => undefined),
+};
+const liveRuntime = new AcpRuntime({
+  provider: "cursor", command: "cursor-agent", args: ["acp"], env: {}, queues: liveQueues,
+}, liveConnection);
+let livePromptSettled = false;
+const liveRun = liveRuntime.run({ prompt: "live", workspaceRoot: "/tmp/project" }, {
+  onProgress: () => { progressDelivered(); },
+}).then((result) => { livePromptSettled = true; return result; });
+await liveProgress;
+assert.equal(livePromptSettled, false, "ACP progress is delivered before the prompt completes");
+finishLivePrompt();
+assert.equal((await liveRun).isOk(), true);
+await liveRuntime.close();
+
+const fencedQueues = new Map<string, { values: unknown[]; onValue?: (value: unknown) => void }>();
+let finishFencedPrompt!: () => void;
+let finishFencedCancel!: () => void;
+let fencedPromptEntered!: () => void;
+const fencedPromptGate = new Promise<void>((resolve) => { finishFencedPrompt = resolve; });
+const fencedCancelGate = new Promise<void>((resolve) => { finishFencedCancel = resolve; });
+const fencedPromptStarted = new Promise<void>((resolve) => { fencedPromptEntered = resolve; });
+const fencedConnection = {
+  agent: {
+    async request(method: string, params?: unknown): Promise<unknown> {
+      const sessionId = (params as { sessionId?: string } | undefined)?.sessionId ?? "fenced_session";
+      if (method === "session/new") {
+        fencedQueues.set(sessionId, { values: [] });
+        return { sessionId };
+      }
+      if (method === "session/prompt") {
+        fencedPromptEntered();
+        await fencedPromptGate;
+        return { stopReason: "cancelled" };
+      }
+      return {};
+    },
+    async cancel() { await fencedCancelGate; },
+  },
+  close() {},
+  closed: new Promise<void>(() => undefined),
+};
+const fencedRuntime = new AcpRuntime({
+  provider: "cursor", command: "cursor-agent", args: ["acp"], env: {}, queues: fencedQueues,
+}, fencedConnection);
+const fencedAbort = new AbortController();
+let fencedSessionId: string | undefined;
+const fencedRun = fencedRuntime.run({ prompt: "first", workspaceRoot: "/tmp/project" }, {
+  onSessionId: (sessionId) => { fencedSessionId = sessionId; },
+}, { signal: fencedAbort.signal });
+await fencedPromptStarted;
+fencedAbort.abort();
+finishFencedPrompt();
+await new Promise<void>((resolve) => setImmediate(resolve));
+await assert.rejects(fencedRuntime.run({
+  prompt: "second", workspaceRoot: "/tmp/project", providerSessionId: fencedSessionId,
+}), /already has an active turn/);
+finishFencedCancel();
+assert.equal((await fencedRun).isErr(), true);
+await fencedRuntime.close();
+
+let finishOpeningSession!: () => void;
+let openingSessionEntered!: () => void;
+const openingSessionGate = new Promise<void>((resolve) => { finishOpeningSession = resolve; });
+const openingSessionStarted = new Promise<void>((resolve) => { openingSessionEntered = resolve; });
+let promptAfterAbort = 0;
+const setupAbortRuntime = new AcpRuntime({
+  provider: "cursor", command: "cursor-agent", args: ["acp"], env: {},
+}, {
+  agent: {
+    async request(method: string): Promise<unknown> {
+      if (method === "session/new") {
+        openingSessionEntered();
+        await openingSessionGate;
+        return { sessionId: "setup_abort_session" };
+      }
+      if (method === "session/prompt") promptAfterAbort += 1;
+      return {};
+    },
+  },
+  close() {},
+  closed: new Promise<void>(() => undefined),
+});
+const setupAbort = new AbortController();
+const setupAbortRun = setupAbortRuntime.run({ prompt: "never submit", workspaceRoot: "/tmp/project" },
+  undefined, { signal: setupAbort.signal });
+await openingSessionStarted;
+setupAbort.abort();
+finishOpeningSession();
+assert.equal((await setupAbortRun).isErr(), true);
+assert.equal(promptAfterAbort, 0);
+await setupAbortRuntime.close();
+
 const cachedContext = {
   agentId: "agt_acp",
   provider: "cursor" as const,

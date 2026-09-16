@@ -153,10 +153,13 @@ export function localAgentWorkflowEnvironment(
   env: NodeJS.ProcessEnv,
   provenance: Pick<LocalAgentRuntimeContext, "workflowRunId" | "workflowStepId" | "workflowAttemptId">,
 ): NodeJS.ProcessEnv {
-  if (!provenance.workflowRunId) return env;
+  const sanitized = { ...env };
+  delete sanitized.DEVSPACE_WORKFLOW_RUN_ID;
+  delete sanitized.DEVSPACE_WORKFLOW_STEP_ID;
+  delete sanitized.DEVSPACE_WORKFLOW_ATTEMPT_ID;
   return {
-    ...env,
-    DEVSPACE_WORKFLOW_RUN_ID: provenance.workflowRunId,
+    ...sanitized,
+    ...(provenance.workflowRunId ? { DEVSPACE_WORKFLOW_RUN_ID: provenance.workflowRunId } : {}),
     ...(provenance.workflowStepId ? { DEVSPACE_WORKFLOW_STEP_ID: provenance.workflowStepId } : {}),
     ...(provenance.workflowAttemptId ? { DEVSPACE_WORKFLOW_ATTEMPT_ID: provenance.workflowAttemptId } : {}),
   };

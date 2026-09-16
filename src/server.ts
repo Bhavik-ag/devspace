@@ -145,10 +145,12 @@ function formatVisibleAgent(agent: {
   provider: string;
   model?: string;
   effort?: string;
+  write_mode?: "read_only" | "allowed" | "full_access";
 }): string {
   const model = agent.model ? `, model ${agent.model}` : "";
   const effort = agent.effort ? `, effort ${agent.effort}` : "";
-  return `${agent.name} (${agent.provider}${model}${effort})`;
+  const writeMode = agent.write_mode ? `, write_mode ${agent.write_mode}` : "";
+  return `${agent.name} (${agent.provider}${model}${effort}${writeMode})`;
 }
 
 function formatAvailableAgentProvider(provider: {
