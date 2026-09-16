@@ -10,13 +10,16 @@ import {
   AgentProviderUnavailableError,
   captureAgentProviderResult,
 } from "./local-agent-errors.js";
-import type {
-  LocalAgentDriver,
-  LocalAgentRunCallbacks,
-  LocalAgentRunInput,
-  LocalAgentRunResult,
-  LocalAgentRuntime,
-  LocalAgentRuntimeContext,
+import {
+  localAgentWorkflowEnvironment,
+  type LocalAgentDriver,
+  type LocalAgentRunCallbacks,
+  type LocalAgentRunControl,
+  type LocalAgentRunInput,
+  type LocalAgentRunResult,
+  type LocalAgentRuntime,
+  type LocalAgentRuntimeContext,
+  type LocalAgentUsageUpdate,
 } from "./local-agent-runtime.js";
 import { terminateProcessTree } from "./process-platform.js";
 
@@ -58,7 +61,11 @@ export class OpencodeRuntime implements LocalAgentRuntime {
     private readonly promptTimeoutMs = OPENCODE_PROMPT_TIMEOUT_MS,
   ) {}
 
-  async run(input: LocalAgentRunInput, callbacks?: LocalAgentRunCallbacks) {
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+    control?: LocalAgentRunControl,
+  ) {
     return captureAgentProviderResult({
       provider: this.provider,
       operation: "run",
@@ -76,14 +83,20 @@ export class OpencodeRuntime implements LocalAgentRuntime {
           await assertOpencodeHealthy(this.client);
           const sessionId = input.providerSessionId ?? await createOpencodeSession(this.client, input);
           await callbacks?.onSessionId?.(sessionId);
-          const promptResult = await this.prompt(sessionId, input);
+          const promptResult = await this.prompt(sessionId, input, control?.signal);
           assertOpenCodePromptSucceeded(promptResult);
           const finalResponse = requireFinalResponse(extractOpenCodeFinalResponse(promptResult));
+          const usage = opencodeUsage(input, promptResult);
+          if (usage) await callbacks?.onUsage?.(usage);
+          await callbacks?.onProgress?.({ type: "text", text: finalResponse.slice(0, 8 * 1024), final: true });
+          const structuredOutput = opencodeStructuredOutput(promptResult);
           return {
             provider: this.provider,
             providerSessionId: sessionId,
             finalResponse,
             items: [promptResult],
+            ...(structuredOutput === undefined ? {} : { structuredOutput }),
+            ...(usage ? { usage } : {}),
           };
         } catch (error) {
           if (isOpenCodeTransportFailure(error)) {
@@ -120,17 +133,38 @@ export class OpencodeRuntime implements LocalAgentRuntime {
     this.server.close();
   }
 
-  private async prompt(sessionId: string, input: LocalAgentRunInput): Promise<unknown> {
+  private async prompt(
+    sessionId: string,
+    input: LocalAgentRunInput,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     const controller = new AbortController();
     this.promptControllers.add(controller);
     let timedOut = false;
+    let cancelled = false;
+    let cancellation: Promise<boolean> | undefined;
+    const cancel = () => {
+      cancelled = true;
+      cancellation ??= this.client.session.abort({
+        sessionID: sessionId,
+        directory: input.workspaceRoot,
+      }, { throwOnError: true }).then(() => true, () => false);
+    };
+    if (signal?.aborted) cancel();
+    else signal?.addEventListener("abort", cancel, { once: true });
     const timer = setTimeout(() => {
       timedOut = true;
+      cancel();
       controller.abort();
     }, this.promptTimeoutMs);
     try {
-      return await promptOpencodeSession(this.client, sessionId, input, controller.signal);
+      const result = await promptOpencodeSession(this.client, sessionId, input, controller.signal);
+      if (cancelled && !timedOut && await cancellation) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+      return result;
     } catch (error) {
+      if (cancelled && !timedOut && await cancellation) throw new DOMException("Aborted", "AbortError");
       if (!timedOut) throw error;
       throw new AgentProviderProtocolError({
         code: "PROVIDER_PROTOCOL_ERROR",
@@ -142,6 +176,7 @@ export class OpencodeRuntime implements LocalAgentRuntime {
       });
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", cancel);
       this.promptControllers.delete(controller);
     }
   }
@@ -156,8 +191,19 @@ export class OpencodeLocalAgentDriver implements LocalAgentDriver {
     private readonly env: NodeJS.ProcessEnv = process.env,
   ) {}
 
-  runtimeKey(_context: LocalAgentRuntimeContext): string {
-    return "opencode:default";
+  runtimeKey(context: LocalAgentRuntimeContext): string {
+    return context.workflowRunId ? `opencode:workflow:${context.workflowRunId}` : "opencode:default";
+  }
+
+  capabilities() {
+    return {
+      cancellation: "turn",
+      structuredOutput: "validated_text",
+      usage: "final",
+      correctionAuthority: "no_tools",
+      permissionRequests: "preconfigured",
+      progress: "final_only",
+    } as const;
   }
 
   async createRuntime(context: LocalAgentRuntimeContext) {
@@ -174,7 +220,7 @@ export class OpencodeLocalAgentDriver implements LocalAgentDriver {
 }
 
 async function defaultOpencodeFactory(
-  _context?: LocalAgentRuntimeContext,
+  context?: LocalAgentRuntimeContext,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ client: OpencodeClientLike; server: OpencodeServerLike }> {
   const { createOpencodeClient } = await import("@opencode-ai/sdk/v2");
@@ -183,9 +229,10 @@ async function defaultOpencodeFactory(
       devspace_read_only: opencodeAgentConfig("read_only"),
       devspace_allowed: opencodeAgentConfig("allowed"),
       devspace_full_access: opencodeAgentConfig("full_access"),
+      devspace_no_tools: opencodeAgentConfig("read_only"),
     },
   };
-  const server = await startOpencodeServer(env, config);
+  const server = await startOpencodeServer(localAgentWorkflowEnvironment(env, context ?? {}), config);
   return {
     client: createOpencodeClient({ baseUrl: server.url }),
     server,
@@ -323,7 +370,12 @@ async function createOpencodeSession(
   return requireSessionId(result.data);
 }
 
-export function opencodeAgentFor(writeMode: LocalAgentRunInput["writeMode"]): string {
+export function opencodeAgentFor(
+  writeMode: LocalAgentRunInput["writeMode"],
+  toolPolicy: LocalAgentRunInput["toolPolicy"] = "normal",
+): string {
+  if (toolPolicy === "none") return "devspace_no_tools";
+  if (toolPolicy === "read_only") return "devspace_read_only";
   switch (writeMode) {
     case "read_only": return "devspace_read_only";
     case "full_access": return "devspace_full_access";
@@ -394,7 +446,13 @@ async function promptOpencodeSession(
     sessionID: sessionId,
     directory: input.workspaceRoot,
     parts: [{ type: "text", text: input.prompt }],
-    agent: opencodeAgentFor(input.writeMode),
+    agent: opencodeAgentFor(input.writeMode, input.toolPolicy),
+    ...(input.toolPolicy === "none"
+      ? { tools: {
+          read: false, edit: false, write: false, glob: false, grep: false,
+          list: false, bash: false, task: false, webfetch: false,
+        } }
+      : input.workflowRunId ? { tools: { task: false } } : {}),
     ...(model ? { model } : {}),
     ...(input.effort ? { variant: input.effort } : {}),
   }, { throwOnError: true, signal });
@@ -427,6 +485,7 @@ function assertOpenCodePromptSucceeded(value: unknown): void {
   const error = asRecord(info?.error);
   if (!error) return;
   const data = asRecord(error.data);
+  const rateLimit = openCodeRateLimit(error, data);
   const message = typeof data?.message === "string"
     ? data.message
     : typeof error.message === "string"
@@ -439,9 +498,27 @@ function assertOpenCodePromptSucceeded(value: unknown): void {
     provider: "opencode",
     operation: "prompt",
     retryable: data?.isRetryable === true,
+    ...(rateLimit ?? {}),
+    executionUncertain: false,
     cause: error,
     message,
   });
+}
+
+function openCodeRateLimit(
+  error: Record<string, unknown>,
+  data: Record<string, unknown> | undefined,
+): { retryAfterMs: number; resetAt: string } | undefined {
+  if (error.name !== "APIError" || data?.statusCode !== 429) return undefined;
+  const headers = asRecord(data.responseHeaders);
+  const retryAfter = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "retry-after")?.[1];
+  if (typeof retryAfter !== "string" || !/^\d+$/.test(retryAfter.trim())) return undefined;
+  const seconds = Number(retryAfter.trim());
+  if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > Math.floor(Number.MAX_SAFE_INTEGER / 1_000)) {
+    return undefined;
+  }
+  const retryAfterMs = seconds * 1_000;
+  return { retryAfterMs, resetAt: new Date(Date.now() + retryAfterMs).toISOString() };
 }
 
 export function extractOpenCodeFinalResponse(value: unknown): string {
@@ -449,6 +526,47 @@ export function extractOpenCodeFinalResponse(value: unknown): string {
   const messages = Array.isArray(root) ? root : readArray(root, "messages");
   if (messages) return extractLastOpenCodeAssistantMessageText(messages);
   return extractOpenCodeAssistantMessageText(root);
+}
+
+function opencodeUsage(
+  input: LocalAgentRunInput,
+  value: unknown,
+): LocalAgentUsageUpdate | undefined {
+  const root = asRecord(unwrapProviderPayload(value));
+  const info = asRecord(root?.info) ?? root;
+  const tokens = asRecord(info?.tokens);
+  if (!tokens) return undefined;
+  const cache = asRecord(tokens.cache);
+  const outputTokens = finiteNonnegative(tokens.output);
+  if (outputTokens === undefined) return undefined;
+  return {
+    attemptId: input.attemptId ?? "untracked",
+    sequence: 1,
+    inputTokens: finiteNonnegative(tokens.input),
+    outputTokens,
+    reasoningTokens: finiteNonnegative(tokens.reasoning),
+    cacheReadTokens: finiteNonnegative(cache?.read),
+    cacheWriteTokens: finiteNonnegative(cache?.write),
+    final: true,
+  };
+}
+
+function opencodeStructuredOutput(value: unknown): LocalAgentRunResult["structuredOutput"] | undefined {
+  const root = asRecord(unwrapProviderPayload(value));
+  const structured = asRecord(root?.info)?.structured;
+  return isJsonValue(structured) ? structured : undefined;
+}
+
+function isJsonValue(value: unknown): value is Exclude<LocalAgentRunResult["structuredOutput"], undefined> {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  const record = asRecord(value);
+  return Boolean(record && Object.getPrototypeOf(value) === Object.prototype && Object.values(record).every(isJsonValue));
+}
+
+function finiteNonnegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function extractLastOpenCodeAssistantMessageText(messages: unknown[]): string {

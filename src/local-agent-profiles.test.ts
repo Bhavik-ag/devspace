@@ -37,6 +37,7 @@ try {
       "provider: claude",
       "model: sonnet",
       "effort: high",
+      "writeMode: read_only",
       "---",
       "",
       "Project body.",
@@ -70,6 +71,7 @@ try {
   assert.equal(profiles[0]?.provider, "claude");
   assert.equal(profiles[0]?.model, "sonnet");
   assert.equal(profiles[0]?.effort, "high");
+  assert.equal(profiles[0]?.writeMode, "read_only");
   assert.equal(profiles[0]?.body, "Project body.");
   await writeFile(
     join(workspaceRoot, ".devspace", "agents", "custom.md"),

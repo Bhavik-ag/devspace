@@ -14,6 +14,8 @@ import { GrokPromptCompletionRegistry } from "./local-agent-grok.js";
 
 const requests: Array<{ method: string; params?: unknown }> = [];
 const queues = new Map<string, { values: unknown[] }>();
+let cancelCount = 0;
+let settleHeldPrompt: (() => void) | undefined;
 const connection = {
   agent: {
     async request(method: string, params?: unknown): Promise<unknown> {
@@ -36,6 +38,11 @@ const connection = {
         return { sessionId };
       }
       if (method === "session/prompt") {
+        const prompt = (params as { prompt?: Array<{ text?: string }> }).prompt?.[0]?.text;
+        if (prompt === "hold") {
+          await new Promise<void>((resolve) => { settleHeldPrompt = resolve; });
+          return { stopReason: "cancelled" };
+        }
         const queue = queues.get(input?.sessionId ?? "");
         queue?.values.push({
           update: {
@@ -43,9 +50,23 @@ const connection = {
             content: { type: "text", text: "ACP response" },
           },
         });
-        return { stopReason: "end_turn" };
+        return {
+          stopReason: "end_turn",
+          usage: {
+            totalTokens: 15,
+            inputTokens: 3,
+            outputTokens: 5,
+            thoughtTokens: 4,
+            cachedReadTokens: 1,
+            cachedWriteTokens: 2,
+          },
+        };
       }
       return {};
+    },
+    async cancel() {
+      cancelCount += 1;
+      settleHeldPrompt?.();
     },
   },
   close() {},
@@ -53,6 +74,7 @@ const connection = {
 };
 
 const sessionIds: string[] = [];
+const usageUpdates: unknown[] = [];
 const runtime = new AcpRuntime({
   provider: "cursor",
   command: "cursor-agent",
@@ -68,8 +90,10 @@ const firstResult = await runtime.run({
   model: "model-a",
   effort: "high",
   writeMode: "read_only",
+  attemptId: "attempt_acp_1",
 }, {
   onSessionId: (sessionId) => { sessionIds.push(sessionId); },
+  onUsage: (usage) => { usageUpdates.push(usage); },
 });
 assert.equal(firstResult.isOk(), true);
 if (firstResult.isErr()) throw firstResult.error;
@@ -91,6 +115,16 @@ const warm = warmResult.value;
 assert.equal(first.providerSessionId, "cursor_session_1");
 assert.equal(warm.finalResponse, "ACP response");
 assert.deepEqual(sessionIds, ["cursor_session_1", "cursor_session_1"]);
+assert.deepEqual(usageUpdates, [{
+  attemptId: "attempt_acp_1",
+  sequence: 1,
+  inputTokens: 3,
+  outputTokens: 5,
+  cacheReadTokens: 1,
+  cacheWriteTokens: 2,
+  reasoningTokens: 4,
+  final: true,
+}]);
 assert.equal(requests.filter(({ method }) => method === "session/new").length, 1);
 assert.equal(requests.filter(({ method }) => method === "session/resume").length, 0);
 assert.equal(requests.filter(({ method }) => method === "session/set_config_option").length, 4);
@@ -98,6 +132,19 @@ assert.equal(
   Object.hasOwn(requests.find(({ method }) => method === "session/new")?.params as object, "additionalDirectories"),
   false,
 );
+
+const acpAbort = new AbortController();
+const held = runtime.run({
+  prompt: "hold",
+  workspaceRoot: "/tmp/project",
+  providerSessionId: first.providerSessionId ?? undefined,
+}, undefined, { signal: acpAbort.signal });
+await new Promise<void>((resolve) => setImmediate(resolve));
+acpAbort.abort();
+const cancelled = await held;
+assert.equal(cancelled.isErr(), true);
+if (cancelled.isErr()) assert.equal(cancelled.error.code, "PROVIDER_CANCELLED");
+assert.equal(cancelCount, 1);
 
 await runtime.releaseSession("cursor_session_1");
 assert.equal(queues.has("cursor_session_1"), false);
