@@ -45,6 +45,7 @@ if (process.platform !== "win32") {
   await writeFile(command, `#!/usr/bin/env node
 import readline from "node:readline";
 let turn = 0;
+let pendingTurn;
 const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
@@ -64,6 +65,10 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     turn += 1;
     const turnId = "turn_" + turn;
     output({ id: message.id, result: { turn: { id: turnId } } });
+    if (message.params.input[0].text === "cancel") {
+      pendingTurn = { threadId: message.params.threadId, turnId };
+      return;
+    }
     setImmediate(() => {
       if (message.params.input[0].text === "fail") {
         output({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: turnId, status: "failed", error: { message: "fake failure" } } } });
@@ -79,6 +84,14 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       output({ method: "item/completed", params: { threadId: message.params.threadId, turnId, item } });
       output({ method: "turn/completed", params: { threadId: message.params.threadId, turn: { id: turnId, status: "completed", items: [item] } } });
     });
+    return;
+  }
+  if (message.method === "turn/interrupt") {
+    output({ id: message.id, result: {} });
+    if (pendingTurn) {
+      output({ method: "turn/completed", params: { threadId: pendingTurn.threadId, turn: { id: pendingTurn.turnId, status: "interrupted", items: [] } } });
+      pendingTurn = undefined;
+    }
   }
 });
 `, { mode: 0o700 });
@@ -144,6 +157,25 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     assert.equal(policy.isOk(), true);
     if (policy.isErr()) throw policy.error;
     assert.deepEqual(JSON.parse(policy.value.finalResponse), { type: "workspaceWrite", networkAccess: true });
+    const controller = new AbortController();
+    const cancelled = runtime.run({
+      prompt: "cancel",
+      workspaceRoot: "/tmp/project",
+      providerSessionId: first.providerSessionId ?? undefined,
+      signal: controller.signal,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    const cancelledResult = await cancelled;
+    assert.equal(cancelledResult.isErr(), true);
+    if (cancelledResult.isErr()) assert.equal(cancelledResult.error.code, "PROVIDER_CANCELLED");
+    assert.equal(runtime.isAlive(), true, "turn cancellation keeps the shared Codex runtime alive");
+    const afterCancellation = await runtime.run({
+      prompt: "after cancellation",
+      workspaceRoot: "/tmp/project",
+      providerSessionId: first.providerSessionId ?? undefined,
+    });
+    assert.equal(afterCancellation.isOk(), true, "the shared runtime accepts a later turn");
     await runtime.releaseSession("thread_new");
   } finally {
     await runtime.close();

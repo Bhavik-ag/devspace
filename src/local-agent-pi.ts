@@ -33,6 +33,7 @@ export type PiSessionLike = Pick<
   | "messages"
   | "modelRegistry"
   | "prompt"
+  | "abort"
   | "subscribe"
   | "setActiveToolsByName"
   | "setModel"
@@ -69,6 +70,7 @@ export class PiSessionRuntime implements LocalAgentRuntime {
       provider: this.provider,
       operation: "run",
       run: async (): Promise<LocalAgentRunResult> => {
+        input.signal?.throwIfAborted();
         if (!this.isAlive()) {
           throw new AgentProviderUnavailableError({
             code: "PROVIDER_UNAVAILABLE",
@@ -80,12 +82,25 @@ export class PiSessionRuntime implements LocalAgentRuntime {
         }
         await callbacks?.onSessionId?.(this.session.sessionId);
         await this.applyOverrides(input);
+        input.signal?.throwIfAborted();
         this.events = [];
         const messageStart = this.session.messages.length;
         this.collectingEvents = true;
+        let abort: Promise<true> | undefined;
+        const onAbort = () => {
+          abort ??= Promise.resolve().then(() => this.session.abort()).then(() => true as const);
+        };
+        input.signal?.addEventListener("abort", onAbort, { once: true });
         try {
-          await this.session.prompt(input.prompt);
+          try {
+            await this.session.prompt(input.prompt);
+          } catch (error) {
+            if (input.signal?.aborted && (await abort)) throw abortError();
+            throw error;
+          }
+          if (input.signal?.aborted && (await abort)) throw abortError();
         } finally {
+          input.signal?.removeEventListener("abort", onAbort);
           this.collectingEvents = false;
         }
         const currentMessages = this.session.messages.slice(messageStart);
@@ -160,6 +175,10 @@ export class PiSessionRuntime implements LocalAgentRuntime {
       this.session.setThinkingLevel(input.effort as never);
     }
   }
+}
+
+function abortError(): DOMException {
+  return new DOMException("The operation was aborted.", "AbortError");
 }
 
 export class PiLocalAgentDriver implements LocalAgentDriver {

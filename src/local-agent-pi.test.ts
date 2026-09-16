@@ -28,6 +28,8 @@ class FakePiSession implements PiSessionLike {
     for (const listener of this.listeners) listener({ type: "agent_end" } as AgentSessionEvent);
   }
 
+  async abort(): Promise<void> {}
+
   subscribe(listener: AgentSessionEventListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -152,3 +154,39 @@ if (missingModel.isErr()) {
   assert.match(missingModel.error.message, /provider\/missing-model/);
 }
 await missingModelRuntime.value.close();
+
+let releaseCancelledPiPrompt!: () => void;
+let markCancelledPiPromptReady!: () => void;
+const cancelledPiPromptReady = new Promise<void>((resolve) => { markCancelledPiPromptReady = resolve; });
+const cancelledPiPrompt = new Promise<void>((resolve) => { releaseCancelledPiPrompt = resolve; });
+class CancelPiSession extends FakePiSession {
+  abortCalls = 0;
+
+  override async prompt(): Promise<void> {
+    markCancelledPiPromptReady();
+    await cancelledPiPrompt;
+  }
+
+  override async abort(): Promise<void> {
+    this.abortCalls += 1;
+    releaseCancelledPiPrompt();
+  }
+}
+const cancelPiSession = new CancelPiSession();
+const cancelPiRuntime = await new PiLocalAgentDriver(async () => cancelPiSession).createRuntime(context);
+assert.equal(cancelPiRuntime.isOk(), true);
+if (cancelPiRuntime.isErr()) throw cancelPiRuntime.error;
+const piController = new AbortController();
+const cancelledPiTurn = cancelPiRuntime.value.run({
+  prompt: "cancel",
+  workspaceRoot: "/tmp/project",
+  signal: piController.signal,
+});
+await cancelledPiPromptReady;
+piController.abort();
+const cancelledPiResult = await cancelledPiTurn;
+assert.equal(cancelledPiResult.isErr(), true);
+if (cancelledPiResult.isErr()) assert.equal(cancelledPiResult.error.code, "PROVIDER_CANCELLED");
+assert.equal(cancelPiSession.abortCalls, 1);
+assert.equal(cancelPiRuntime.value.isAlive(), true);
+await cancelPiRuntime.value.close();

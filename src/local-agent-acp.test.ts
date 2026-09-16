@@ -254,6 +254,56 @@ if (completedOverlappingTurn.isErr()) throw completedOverlappingTurn.error;
 assert.equal(completedOverlappingTurn.value.finalResponse, "overlap response");
 await overlapRuntime.close();
 
+const cancelQueues = new Map<string, { values: unknown[] }>();
+let completeCancelledPrompt!: () => void;
+let markCancelledPromptEntered!: () => void;
+const cancelledPromptEntered = new Promise<void>((resolve) => { markCancelledPromptEntered = resolve; });
+const cancelledPromptCompletion = new Promise<void>((resolve) => { completeCancelledPrompt = resolve; });
+let acpCancelCalls = 0;
+const cancelConnection = {
+  agent: {
+    async request(method: string): Promise<unknown> {
+      if (method === "session/new") {
+        cancelQueues.set("cancel_session", { values: [] });
+        return { sessionId: "cancel_session" };
+      }
+      if (method === "session/prompt") {
+        markCancelledPromptEntered();
+        await cancelledPromptCompletion;
+        return { stopReason: "cancelled" };
+      }
+      return {};
+    },
+  },
+  async cancel() {
+    acpCancelCalls += 1;
+    completeCancelledPrompt();
+  },
+  close() {},
+  closed: new Promise<void>(() => undefined),
+};
+const cancelRuntime = new AcpRuntime({
+  provider: "cursor",
+  command: "cursor-agent",
+  args: ["acp"],
+  env: {},
+  queues: cancelQueues,
+}, cancelConnection);
+const acpController = new AbortController();
+const cancelledAcpTurn = cancelRuntime.run({
+  prompt: "cancel me",
+  workspaceRoot: "/tmp/project",
+  signal: acpController.signal,
+});
+await cancelledPromptEntered;
+acpController.abort();
+const cancelledAcpResult = await cancelledAcpTurn;
+assert.equal(cancelledAcpResult.isErr(), true);
+if (cancelledAcpResult.isErr()) assert.equal(cancelledAcpResult.error.code, "PROVIDER_CANCELLED");
+assert.equal(acpCancelCalls, 1);
+assert.equal(cancelRuntime.isAlive(), true, "ACP turn cancellation keeps the runtime alive");
+await cancelRuntime.close();
+
 const cachedContext = {
   agentId: "agt_acp",
   provider: "cursor" as const,
